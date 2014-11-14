@@ -114,6 +114,32 @@ stopwords = {line.rstrip()
 words_re = re.compile('\w+')
 
 
+stemmer = nltk.stem.snowball.EnglishStemmer()
+
+
+def stem_word(word: str):
+    return stemmer.stem(word)
+
+
+def word_list(string: str):
+    return [token
+            for token in nltk.tokenize.word_tokenize(string)]
+
+
+def jaccard_sim(set1: set, set2: set):
+    return len(set1.intersection(set2)) / len(set1.union(set2))
+
+
+def without_stopwords(words):
+    return [word for word in words if word not in stopwords]
+
+
+def stem_jaccard(str1, str2):
+    stems1 = set(stem_word(word) for word in without_stopwords(word_list(str1)))
+    stems2 = set(stem_word(word) for word in without_stopwords(word_list(str2)))
+    return jaccard_sim(stems1, stems2)
+
+
 def pos_tag(string_or_tokens: str):
     if isinstance(string_or_tokens, str):
         string = string_or_tokens

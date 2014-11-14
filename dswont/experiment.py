@@ -12,6 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+
+################################################################################
+## This is a file for writing one-off scripts, commenting them and messing up.
+## It is intended to be run from the command line like this:
+##
+## >> python3.4 -m dswont.experiment.py
+##
+################################################################################
+
 from dswont import category_explorer
 
-category_explorer.depth_based_selection(10)
+category_explorer.run_selection_procedure(10000)
