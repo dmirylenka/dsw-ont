@@ -210,7 +210,8 @@ def get_feedback_from_stdin(state_to_str):
             print("Please, provide feedback for the following state:\n{}"
                   .format(state_to_str(state)))
             print(
-                "Press 'y' if relevant, 'n' if irrelevant, and 'x' if in doubt")
+                "Press 'y' if relevant, 'n' if irrelevant, 'x' if in doubt, "
+                "and 'q' if you want to quit this.")
             answer = util.getch()
             if answer == 'y':
                 return '+'
@@ -297,14 +298,17 @@ class LearningSearchAlgorithm():
                         list(self._search._features.value_map(state).items()),
                         -cost))
 
-        siblings = sspace.get_siblings(state, self._search._space)
-        if len(siblings):
-            worst_sibling = max(siblings,
-                                key=lambda sibling: self._search._cost_fn(
-                                    sibling))
-            print("Worst sibling: {}, utility: {}"
-                  .format(self._state_to_str(worst_sibling),
-                          -self._search._cost_fn(worst_sibling)))
+        # # It's interesting to see the siblings of the current node,
+        # # But it doubles the time for one iteration.
+        # #
+        # siblings = sspace.get_siblings(state, self._search._space)
+        # if len(siblings):
+        #     worst_sibling = max(siblings,
+        #                         key=lambda sibling: self._search._cost_fn(
+        #                             sibling))
+        #     print("Worst sibling: {}, utility: {}"
+        #           .format(self._state_to_str(worst_sibling),
+        #                   -self._search._cost_fn(worst_sibling)))
 
         if (-cost < 1 - self._alpha or depth <= 0 \
                     or self._too_long_without_feedback()):

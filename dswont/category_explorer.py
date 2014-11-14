@@ -39,6 +39,12 @@ NODE_STATES = {
 
 
 class CategoryGraphState(sspace.State):
+    """The state of the category graph.
+
+    Includes the 'explored' nodes — those considered relevant according to the
+    graph, and candidate nodes - those on the border of the relevant categories.
+
+    """
     @classmethod
     def initial_state(cls, root):
         node_info = collections.OrderedDict()
@@ -85,6 +91,14 @@ class CategoryGraphState(sspace.State):
 
 
 class AddNodeAction(sspace.Action):
+    """Action that describes moving between CategoryGraphState-s.
+
+    The move represents adding one candidate node to the category graph.
+    The current implementation of AddNodeAction and CategoryGraphState through
+    persistent immutable dictionaries allows this operation in logarithmic time
+    and logarithmic additional space.
+
+    """
     def __init__(self, node, relation_cache: wiki.CategoryRelationCache):
         self._node = node
         self._relations = relation_cache
@@ -92,7 +106,7 @@ class AddNodeAction(sspace.Action):
     def node(self):
         return self._node
 
-    def next(self, state:CategoryGraphState):
+    def next(self, state: CategoryGraphState):
         node_added = self._node
         assert state.is_candidate(node_added), \
             "Node '{}' must be candidate:".format(node_added)
@@ -130,10 +144,16 @@ class AddNodeAction(sspace.Action):
 
 
 class CategoryGraphStateSpace(sspace.StateSpace):
+    """The search space on CategoryGraphState-s.
+
+    For a given category graph, the state defines the next possible states as
+    those resulting from adding one candidate (adjacent) node to the graph.
+
+    """
     def __init__(self, relations: wiki.CategoryRelationCache):
         self._relations = relations
 
-    def next_actions(self, state:CategoryGraphState):
+    def next_actions(self, state: CategoryGraphState):
         return [AddNodeAction(candidate, self._relations)
                 for candidate in state.candidate_nodes()]
 
@@ -213,15 +233,30 @@ def depth_per_node_incremental(action, prev_sstate, prev_value):
 
 def max_depth_incremental(action, prev_sstate, prev_value):
     """Computes the average estimated depth of the explored nodes.
-    
+
     The value is computed incrementally based on the depth of the added node.
-    
+
     """
     node_depth = prev_sstate.state().depth(action.node())
     if node_depth:
         return max(prev_value, node_depth)
     else:
         return 0
+
+
+def normalized_graph_size(sstate: sspace.SearchState):
+    """Computes the inverse of the size of the category graph.
+
+    """
+
+    # Note that we are computing the size of the category graph indirectly,
+    # through the previous state. This because our current state may be lazy,
+    # and we want to avoid materializing it.
+    previous_sstate = sstate.previous()
+    if previous_sstate is None:
+        return 1.0
+    else:
+        return 1 - 1.0 / (previous_sstate.state().size() + 1)
 
 
 def proportion_of_leaf_nodes_incremental_fn(rel: wiki.CategoryRelationCache):
@@ -245,28 +280,61 @@ def proportion_of_leaf_nodes_incremental_fn(rel: wiki.CategoryRelationCache):
     return proportion_of_leaf_nodes_incremental
 
 
-# stemmer = nltk.stem.snowball.EnglishStemmer()
+def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache):
+    """Computes the average similarity between all relevant parent-child pairs.
 
-# def stem_word(word: str):
-#     return stemmer.stem(word)
+    The similarity is measures as the Jaccard index between the sets of
+    non-stopword stems in parent's and child's titles.
+    The value is computed incrementally based on the new added node.
 
-# def jaccard_sim(set1: set, set2: set):
-#     return len(set1.intersection(set2)) / len(set1.union(set2))
+    """
 
-# def stem_jaccard(str1, str2):
-#     stems1 = set(nltk.tokenize.word_tokenize(str1))
-#     stems2 = set(nltk.tokenize.word_tokenize(str2))
-#     print(stems1, stems2)
-#     return jaccard_sim(stems1, stems2)
+    # Sometimes, Wikipedia's sub- and super-category functionality is
+    # inconsistent (because the lists of sub- and super-categories are cached
+    # independently). Thus it may happen that a subcategory of A, will not see
+    # A as its supercategory. As a result, some of the nodes that get into this
+    # function may have no supercategories. We want to issue a warning about
+    # such situations, but only the first time we see the problematic node.
+    nodes_with_no_parents = {}
 
-# stem_jaccard('Internet history', 'Computers and internet')
+    def parent_child_similarity_incremental(action: AddNodeAction,
+                                            prev_sstate: sspace.SearchState,
+                                            prev_value):
+        state = prev_sstate.state()
+        nnodes = state.size()
+        if nnodes == 0:
+            return 0
+        node = action.node()
+        all_parents = (parent_node for parent_node in rel.parents(node))
+        explored_parents = (parent_node for parent_node in all_parents
+                            if state.is_explored(parent_node))
+        similarity = max((util.stem_jaccard(node, parent_node)
+                          for parent_node in explored_parents),
+                         default=None)
+        if similarity is None:
+            similarity = 0
+            if node in nodes_with_no_parents:
+                logging.warning("Explored node '{}' has no explored parents."
+                                .format(node))
+                nodes_with_no_parents.add(node)
+
+        return (nnodes * prev_value + similarity) / (nnodes + 1)
+
+    return parent_child_similarity_incremental
 
 
-def depth_based_selection(n):
+################################################################################
+## Definition of the interactive learning procedure.
+################################################################################
+
+def run_selection_procedure(max_nodes):
+    # new_subcat_index = '/Users/dmirylenka/data/dswont-fresh/uri-to-subcats'
+    # new_supercat_index = '/Users/dmirylenka/data/dswont-fresh/uri-to-supercats'
+    # with wiki.CategoryRelationCache(
+    #         subcat_index_file=new_subcat_index,
+    #         supercat_index_file=new_supercat_index) as rel:
     with wiki.CategoryRelationCache() as rel:
         root = 'Computing'
-        #         children = rel.children(root)
-        #         start_state = CategoryGraphState.initial_state(root, children)
         start_state = CategoryGraphState.initial_state(root)
 
         state_space = CategoryGraphStateSpace(rel)
@@ -283,9 +351,13 @@ def depth_based_selection(n):
             "frac_leaves",
             proportion_of_leaf_nodes_incremental_fn(rel),
             zero_value=0)
+        parent_similarity_ftr = ftr.CachingAdditiveSearchStateFeature(
+            "parent_similarity",
+            parent_child_similarity_incremental_fn(rel),
+            zero_value=0)
+        graph_size_ftr = ftr.Feature('graph_size', normalized_graph_size)
 
 
-        #     cost_fn = lambda sstate: -ftr(sstate)
         depth_ftr = ftr.CachingAdditiveSearchStateFeature(
             'normalized_depth', depth_per_node_incremental, zero_value=0)
         max_depth_ftr = ftr.CachingAdditiveSearchStateFeature(
@@ -293,27 +365,25 @@ def depth_based_selection(n):
         constant_feature = ftr.Feature('unity', lambda x: 1)
         features = ftr.Features(constant_feature,
                                 depth_ftr,
-                                max_depth_ftr,
+                                # max_depth_ftr,
                                 relevant_links_ftr,
                                 irrelevant_links_ftr,
-                                leaves_ftr)
+                                leaves_ftr,
+                                parent_similarity_ftr,
+                                graph_size_ftr)
 
         def goal_test(sstate):
-            return sstate.state().size() >= n
+            return sstate.state().size() >= max_nodes
 
         s0 = sspace.SearchState(start_state)
         planner = search.BeamSearchPlanner(1)
         update_rule = lsearch.AggressiveUpdateRule()
-        #         update_rule = PerceptronUpdateRule()
+        # update_rule = PerceptronUpdateRule()
         restart_rule = lsearch.RestartFromScratchRule()
         search_learner = lsearch.LearningSearch(s0, state_space, planner,
                                                 goal_test, features,
                                                 update_rule, restart_rule,
-                                                [1, -1, -1, 1, -1, 1]
-                                                #
-                                                #                    [0,  0,
-                                                #  0, 0,  0, 0]
-        )
+                                                [1, -1, 1, -1, 1, 1, -1])
 
         def state_to_node_name(state):
             return "'{}'".format(state.action().node())
@@ -344,7 +414,7 @@ def depth_based_selection(n):
             search_learner, teacher,
             state_to_str=state_to_node_pair,
             alpha=0.2,
-            steps_no_feedback=400)
+            steps_no_feedback=max_nodes)
 
         n_explored = []
         n_candidate = []

@@ -903,38 +903,8 @@ def heuristic_score_feature_fn_for_learning(relevance_factor, decay_factor):
     return heuristic_score_feature
 
 
-stemmer = nltk.stem.snowball.EnglishStemmer()
-
-
-def stem_word(word: str):
-    return stemmer.stem(word)
-
-
-def word_list(string: str):
-    return [token
-            for token in nltk.tokenize.word_tokenize(string)]
-
-
-def jaccard_sim(set1: set, set2: set):
-    return len(set1.intersection(set2)) / len(set1.union(set2))
-
-
-def without_stopwords(words):
-    return [word for word in words if word not in util.stopwords]
-
-
-def stem_jaccard(str1, str2):
-    stems1 = set(stem_word(word) for word in without_stopwords(word_list(str1)))
-    stems2 = set(stem_word(word) for word in without_stopwords(word_list(str2)))
-    return jaccard_sim(stems1, stems2)
-
-
-assert stem_jaccard("Computer science related lists",
-                    "Lists and Computing") == 0.5
-
-
 def parent_max_jaccard_similarity(selection: CategorySelection, node):
-    return max(stem_jaccard(to_title(node), to_title(parent))
+    return max(util.stem_jaccard(to_title(node), to_title(parent))
                for parent in selection.get_parents(node))
 
 
