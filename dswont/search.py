@@ -207,13 +207,10 @@ class HeuristicSearch(object):
         """
         return self._planner.cost_state_pairs()
 
-    def restart(self, states, cost_fn):
+    def restart(self, states):
         """Restarts the search procedure, from the given search states.
 
-        - cost_fn is useful if you want to update you weight vector.
-
         """
-        self._cost_fn = cost_fn
         self._steps = []
         self._last_state = None
         self._next_states_precomputed_for = None
@@ -221,7 +218,7 @@ class HeuristicSearch(object):
         while not self._planner.empty():
             self._planner.dequeue()
         for state in states:
-            self._planner.enqueue(state, cost_fn(state))
+            self._planner.enqueue(state, self._cost_fn(state))
         _, self._current_state = self.current_cost_state_pair()
 
     def current_cost_state_pair(self) -> sspace.SearchState:
@@ -252,7 +249,7 @@ class HeuristicSearch(object):
             self._next_states_precomputed_for = current_state
         return self._precomputed_next_cost_sate_pairs
 
-    def step(self):
+    def step(self) -> (float, sspace.SearchState):
         next_cost_state_pairs = self.next_cost_state_pairs()
         current_cost, current_state = self._planner.dequeue()
         if not self._goal_test(current_state):
@@ -260,8 +257,6 @@ class HeuristicSearch(object):
                 self._planner.enqueue(next_state, next_cost)
             _, self._current_state = self.current_cost_state_pair()
         self._last_state = current_state
-        if self._param('trace'):
-            self._steps.append(current_cost, current_state)
         return current_cost, current_state
 
     def done(self) -> bool:
@@ -281,6 +276,9 @@ def feature_based_cost_fn(features: ftr.Features, weight_vector):
 
 
 class FeatureBasedHeuristicSearch(HeuristicSearch):
+    """Search, in which heuristic is a linear function of the state's features.
+
+    """
     def __init__(self, start: sspace.SearchState, space: sspace.StateSpace,
                  planner: SearchPlanner, goal_test, features: ftr.Features,
                  weight_vector, **params):
@@ -289,3 +287,16 @@ class FeatureBasedHeuristicSearch(HeuristicSearch):
         cost_fn = feature_based_cost_fn(features, weight_vector)
         super().__init__(start, space, cost_fn,
                          planner, goal_test, **params)
+
+    @property
+    def weight_vector(self):
+        return self._weight_vector
+
+    @weight_vector.setter
+    def weight_vector(self, weight_vector):
+        """Setter for weight_vector that updates the cost function.
+
+        """
+        self._weight_vector = weight_vector
+        self._cost_fn = feature_based_cost_fn(self._features, weight_vector)
+        self.clear_precomputed_next_state_cost()

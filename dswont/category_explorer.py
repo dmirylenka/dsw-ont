@@ -328,11 +328,6 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache):
 ################################################################################
 
 def run_selection_procedure(max_nodes):
-    # new_subcat_index = '/Users/dmirylenka/data/dswont-fresh/uri-to-subcats'
-    # new_supercat_index = '/Users/dmirylenka/data/dswont-fresh/uri-to-supercats'
-    # with wiki.CategoryRelationCache(
-    #         subcat_index_file=new_subcat_index,
-    #         supercat_index_file=new_supercat_index) as rel:
     with wiki.CategoryRelationCache() as rel:
         root = 'Computing'
         start_state = CategoryGraphState.initial_state(root)
@@ -372,18 +367,14 @@ def run_selection_procedure(max_nodes):
                                 parent_similarity_ftr,
                                 graph_size_ftr)
 
-        def goal_test(sstate):
+        def goal_test(sstate: sspace.SearchState):
             return sstate.state().size() >= max_nodes
 
         s0 = sspace.SearchState(start_state)
         planner = search.BeamSearchPlanner(1)
-        update_rule = lsearch.AggressiveUpdateRule()
-        # update_rule = PerceptronUpdateRule()
-        restart_rule = lsearch.RestartFromScratchRule()
-        search_learner = lsearch.LearningSearch(s0, state_space, planner,
-                                                goal_test, features,
-                                                update_rule, restart_rule,
-                                                [1, -1, 1, -1, 1, 1, -1])
+        update_rule = lsearch.AggressiveBinaryUpdateRule()
+        querying_rule = lsearch.SmallMarginOfCurrentNodeBinaryQueryingRule(0.2)
+        restart_rule = lsearch.OnDequeingNegativeRestartFromScratchRule()
 
         def state_to_node_name(state):
             return "'{}'".format(state.action().node())
@@ -393,40 +384,23 @@ def run_selection_procedure(max_nodes):
             previous_node = previous_action.node() if previous_action else None
             return "'{}'->'{}'".format(previous_node, state.action().node())
 
+        teacher = lsearch.BinaryFeedbackStdInTeacher(state_to_node_pair)
+
+        weight_vector = [1, -1, 1, -1, 1, 1, -1]
+
+        learning_algo = lsearch.LearningSearch(
+            s0, state_space, planner, goal_test, features, weight_vector,
+            querying_rule, teacher, update_rule, restart_rule,
+            state_to_node_name
+        )
+
         data = topics.default_data()
-
-        def ground_truth_feedback_fn(state):
-            node_name = dbpedia.to_category_uri(state.action().node())
-            label = data.get(node_name)
-            if label is None:
-                return '0'
-            elif label:
-                return '+'
-            else:
-                return '-'
-
-        teacher = lsearch.SessionCachingTeacher(
-            lsearch.StdInUserFeedbackTeacher(state_to_str=state_to_node_pair),
-            # AbstractTeacher(ground_truth_feedback_fn),
-            key=state_to_node_name)
-
-        learning_algo = lsearch.LearningSearchAlgorithm(
-            search_learner, teacher,
-            state_to_str=state_to_node_pair,
-            alpha=0.2,
-            steps_no_feedback=max_nodes)
-
-        n_explored = []
-        n_candidate = []
-        n_total = []
         accuracies = []
         weighted_f1s = []
 
         niter = 0
-        last_state = None
         while not learning_algo.done():
             cost, state = learning_algo.step()
-            last_state = state
             if niter % 10 == 0:
                 accuracy = topics.evaluate_classifier(
                     state.state(), data.keys(),
@@ -441,9 +415,4 @@ def run_selection_procedure(max_nodes):
                 print("Iteration {:>5}, accuracy {:4.3f},"
                       "weighted f1 {:4.3f}, topic: '{}', depth: {}"
                       .format(niter, accuracy, weighted_f1, node, depth))
-
-                n_explored.append(len(list(state.state().explored_nodes())))
-                n_candidate.append(len(list(state.state().candidate_nodes())))
-                n_total.append(len(state.state()._node_info.keys()))
             niter += 1
-        return last_state
