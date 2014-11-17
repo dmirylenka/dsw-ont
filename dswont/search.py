@@ -33,15 +33,23 @@ class SearchPlanner(metaclass=abc.ABCMeta):
     """
 
     @abc.abstractmethod
-    def empty(self):
+    def empty(self) -> bool:
         return True
 
     @abc.abstractmethod
-    def enqueue(self, state: sspace.SearchState, cost: float=0):
+    def enqueue(self, state: sspace.SearchState, cost: float=0) -> None:
         pass
 
     @abc.abstractmethod
-    def dequeue(self) -> sspace.SearchState:
+    def dequeue(self) -> (float, sspace.SearchState):
+        raise ValueError("Cannot dequeue from an empty planner.")
+
+    @abc.abstractmethod
+    def peek(self) -> (float, sspace.SearchState):
+        raise ValueError("Cannot dequeue from an empty planner.")
+
+    @abc.abstractmethod
+    def cost_state_pairs(self):
         raise ValueError("Cannot dequeue from an empty planner.")
 
     @abc.abstractmethod
@@ -70,27 +78,27 @@ class PriorityQueue(object):
         self._queue = []
         self._counter = itertools.count()
 
-    def empty(self):
+    def empty(self) -> bool:
         return len(self._queue) == 0
 
-    def _trim_to_size(self):
+    def _trim_to_size(self) -> None:
         if self._max_size and len(self._queue) > self._max_buffer_size:
             self._queue = heapq.nsmallest(self._max_size, self._queue)
             heapq.heapify(self._queue)
 
-    def put(self, item, cost=0):
+    def put(self, item, cost=0) -> None:
         count = next(self._counter)
         entry = (cost, count, item)
         heapq.heappush(self._queue, entry)
         self._trim_to_size()
 
-    def pop(self):
+    def pop(self) -> (float, object):
         if len(self._queue) == 0:
             raise IndexError("Cannot pop from an empty PriorityQueue")
         cost, count, item = heapq.heappop(self._queue)
         return cost, item
 
-    def peek(self):
+    def peek(self) -> (float, object):
         if len(self._queue) == 0:
             raise IndexError("Cannot peek from an empty PriorityQueue")
         cost, count, item = min(self._queue)
@@ -123,17 +131,41 @@ class BeamSearchPlanner(SearchPlanner):
         self._beam_size = beam_size
         self._queue = PriorityQueue(beam_size)
 
-    def empty(self):
+    def empty(self) -> bool:
+        """Returns True if there schedule is empty, False otherwise.
+
+        """
         return self._queue.empty()
 
     def states(self):
+        """Returns the sequence of scheduled states, ordered by cost.
+
+        """
         return self._queue.items()
 
-    def enqueue(self, state: sspace.State, cost: float=0):
+    def cost_state_pairs(self):
+        """Returns the sequence of (cost, state) pairs, ordered by cost.
+
+        """
+        return self._queue.entries()
+
+    def enqueue(self, state: sspace.SearchState, cost: float=0):
+        """Schedules a new state with a given cost.
+
+        """
         self._queue.put(state, cost)
 
-    def dequeue(self):
+    def dequeue(self) -> (float, sspace.SearchState):
+        """Removes from the schedule and returns the minimum (cost, state) pair.
+
+        """
         return self._queue.pop()
+
+    def peek(self) -> (float, sspace.SearchState):
+        """Returns the minimum scheduled (cost, state) pair.
+
+        """
+        return self._queue.peek()
 
     def __repr__(self):
         return "BeamSearch({}, {})".format(self._beam_size,
@@ -146,7 +178,7 @@ class HeuristicSearch(object):
     """
 
     def __init__(self, start: sspace.SearchState, space: sspace.StateSpace,
-                 cost_fn, planner:SearchPlanner, goal_test, **params):
+                 cost_fn, planner: SearchPlanner, goal_test, **params):
         self._planner = planner
         self._start = start
         self._space = space
@@ -154,6 +186,9 @@ class HeuristicSearch(object):
         self._cost_fn = cost_fn
         self._steps = []
         self._last_state = None
+        self._current_state = None
+        self._next_states_precomputed_for = None
+        self._precomputed_next_cost_sate_pairs = None
         self._planner.enqueue(start)
         self._params = params
 
@@ -161,29 +196,73 @@ class HeuristicSearch(object):
         return self._params.get(name, default)
 
     def states(self):
+        """Returns the sequence of scheduled states, ordered by cost.
+
+        """
         return self._planner.states()
 
+    def cost_state_pairs(self):
+        """Returns the sequence of (cost, state) pairs, ordered by cost.
+
+        """
+        return self._planner.cost_state_pairs()
+
     def restart(self, states, cost_fn):
+        """Restarts the search procedure, from the given search states.
+
+        - cost_fn is useful if you want to update you weight vector.
+
+        """
         self._cost_fn = cost_fn
         self._steps = []
         self._last_state = None
+        self._next_states_precomputed_for = None
+        self._precomputed_next_cost_sate_pairs = None
         while not self._planner.empty():
             self._planner.dequeue()
         for state in states:
             self._planner.enqueue(state, cost_fn(state))
+        _, self._current_state = self.current_cost_state_pair()
 
-    def next_step(self):
-        return self._planner.dequeue()
+    def current_cost_state_pair(self) -> sspace.SearchState:
+        """Returns the best of the currently scheduled states.
 
-    def step(self, cost, state):
-        if not self._goal_test(state):
-            for next_state in self._space.next_states(state):
-                cost = self._cost_fn(next_state)
-                self._planner.enqueue(next_state, cost)
-        self._last_state = state
+        """
+        return self._planner.peek()
+
+    def _compute_next_cost_state_pairs(self, state):
+        for next_state in self._space.next_states(state):
+            cost = self._cost_fn(next_state)
+            yield cost, next_state
+
+    def clear_precomputed_next_state_cost(self):
+        self._next_states_precomputed_for = None
+
+    def next_cost_state_pairs(self):
+        """Returns the sequence of (cost, state) pairs to be scheduled next.
+
+        The states are the all next states of the best scheduled state.
+
+        """
+        _, current_state = self.current_cost_state_pair()
+        if current_state != self._next_states_precomputed_for:
+            self._precomputed_next_cost_sate_pairs = \
+                sorted(self._compute_next_cost_state_pairs(current_state)
+                       , key=lambda pair: (pair[0], str(pair[1])))
+            self._next_states_precomputed_for = current_state
+        return self._precomputed_next_cost_sate_pairs
+
+    def step(self):
+        next_cost_state_pairs = self.next_cost_state_pairs()
+        current_cost, current_state = self._planner.dequeue()
+        if not self._goal_test(current_state):
+            for next_cost, next_state in next_cost_state_pairs:
+                self._planner.enqueue(next_state, next_cost)
+            _, self._current_state = self.current_cost_state_pair()
+        self._last_state = current_state
         if self._param('trace'):
-            self._steps.append(cost, state)
-        return cost, state
+            self._steps.append(current_cost, current_state)
+        return current_cost, current_state
 
     def done(self) -> bool:
         return (self._last_state is not None

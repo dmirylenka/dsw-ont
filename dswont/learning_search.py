@@ -130,6 +130,7 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
         self._updates += 1
         self._cost_fn = search.feature_based_cost_fn(self._features,
                                                      self._weight_vector)
+        self.clear_precomputed_next_state_cost()
         if restart:
             print("!!!!!!!!!!!!!!!!!!!!!! RESTART !!!!!!!!!!!!!!!!!!!!!!!")
             self.restart(
@@ -141,10 +142,10 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
             self._restarts += 1
             self._moves_since_restart = 0
 
-    def step(self, cost, state):
+    def step(self):
         self._moves += 1
         self._moves_since_restart += 1
-        return super().step(cost, state)
+        return super().step()
 
 
 class Teacher(metaclass=abc.ABCMeta):
@@ -239,12 +240,12 @@ class StdInUserFeedbackTeacher(AbstractTeacher):
 # Bloody mess.
 # TODO: Clean this up!
 class LearningSearchAlgorithm():
-    def __init__(self, search:LearningSearch, teacher:Teacher, state_to_str,
-                 alpha=0, steps_no_feedback=0):
-        self._search = search
+    def __init__(self, search_algo: LearningSearch, teacher: Teacher,
+                 state_to_str, alpha=0, steps_no_feedback=0):
+        self._search = search_algo
         self._teacher = teacher
         self._state_to_str = state_to_str
-        self._search.step(*self._search.next_step())
+        self._search.step()
         self._pos = set()
         self._neg = set()
         self._dub = set()
@@ -267,19 +268,7 @@ class LearningSearchAlgorithm():
             and self._search._moves_since_restart >= self\
                    ._max_moves_across_restarts
 
-    def step(self):
-        #         print("All states:")
-        #         node_seqs = []
-        #         for state in self._search.states():
-        #             nodes = [action.node() for action in action_seq(state)]
-        #             node_seqs.append(sorted(nodes))
-        #         print("States (sorted):")
-        #         pprint.pprint(sorted(node_seqs))
-        cost, state = self._search.next_step()
-        restarted = False
-        node = state.action().node()
-        node_string = self._state_to_str(state)
-        depth = state.state().depth(node)
+    def report_iteration(self, cost, depth, node_string, state):
         if self._search._moves % 1 == 0:
             print(
                 "Iteration {}, {} restarts, {} moves since restart, "
@@ -298,6 +287,10 @@ class LearningSearchAlgorithm():
                         list(self._search._features.value_map(state).items()),
                         -cost))
 
+            # print("Next node state pairs:")
+            # for cost, state in self._search.next_cost_state_pairs():
+            #     print("State {:.4f} '{}'".format(cost, self._state_to_str(state)))
+
         # # It's interesting to see the siblings of the current node,
         # # But it doubles the time for one iteration.
         # #
@@ -310,6 +303,23 @@ class LearningSearchAlgorithm():
         #           .format(self._state_to_str(worst_sibling),
         #                   -self._search._cost_fn(worst_sibling)))
 
+    def step(self):
+        #         print("All states:")
+        #         node_seqs = []
+        #         for state in self._search.states():
+        #             nodes = [action.node() for action in action_seq(state)]
+        #             node_seqs.append(sorted(nodes))
+        #         print("States (sorted):")
+        #         pprint.pprint(sorted(node_seqs))
+        cost, state = self._search.current_cost_state_pair()
+        restarted = False
+        node = state.action().node()
+        node_string = self._state_to_str(state)
+        depth = state.state().depth(node)
+        self.report_iteration(cost, depth, node_string, state)
+
+        self._search.next_cost_state_pairs()
+
         if (-cost < 1 - self._alpha or depth <= 0 \
                     or self._too_long_without_feedback()):
             if self._had_feedback(node):
@@ -320,7 +330,7 @@ class LearningSearchAlgorithm():
                     print(
                         "SMALL MARGIN {} for state {}, getting feedback".format(
                             -cost, node_string))
-                elif depth <= 1:
+                elif depth <= 0:
                     print(
                         "SMALL DEPTH {} for state {}, getting feedback".format(
                             depth, node_string))
@@ -365,5 +375,5 @@ class LearningSearchAlgorithm():
         self._max_moves_across_restarts = max(self._max_moves_across_restarts,
                                               self._search._moves_since_restart)
         if not restarted:
-            self._search.step(cost, state)
+            self._search.step()
         return cost, state
