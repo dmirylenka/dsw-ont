@@ -37,7 +37,6 @@ NODE_STATES = {
     NODE_STATE_EXPLORED: 'explored'
 }
 
-
 class CategoryGraphState(sspace.State):
     """The state of the category graph.
 
@@ -116,25 +115,28 @@ class AddNodeAction(sspace.Action):
         current_node_infos = state._node_info
 
         # Change the status of the node being added.
-        node_info = current_node_infos.get(node_added).copy()
-        node_info['status'] = NODE_STATE_EXPLORED
-        updated_node_infos = current_node_infos.assoc(node_added, node_info)
+        node_info = current_node_infos.get(node_added)
+        node_depth = node_info['depth_estimate']
 
-        node_depth = node_info.get('depth_estimate')
+        updated_node_infos = current_node_infos.assoc(
+            node_added,
+            {'status': NODE_STATE_EXPLORED,
+             'depth_estimate': node_depth})
 
         # Change the status of the node's children.
         for child in children:
-            child_node_info = (current_node_infos.get(child) or {}).copy()
-            if child_node_info.get('status') != NODE_STATE_EXPLORED:
-                child_node_info['status'] = NODE_STATE_CANDIDATE
+            child_node_info = (current_node_infos.get(child)
+                               or {'status': NODE_STATE_UNVIEWED,
+                                   'depth_estimate': float('inf')})
+            # Note: makes use of the fact that NODE_STATE_UNVIEWED == 0
+            child_status = child_node_info['status'] or NODE_STATE_CANDIDATE
             # Re-estimate the child's depth
-            old_child_depth = child_node_info.get('depth_estimate') \
-                or float('inf')
-            child_node_info['depth_estimate'] = \
-                min(node_depth + 1, old_child_depth)
+            child_depth = child_node_info['depth_estimate']
+            child_depth = min(node_depth + 1, child_depth)
 
-            updated_node_infos = updated_node_infos.assoc(child,
-                                                          child_node_info)
+            updated_node_infos = updated_node_infos.assoc(
+                child,
+                {'status': child_status, 'depth_estimate':child_depth})
 
         # Return the 'updated' state that structurally shares most of the data.
         return CategoryGraphState(updated_node_infos, state.size() + 1)
@@ -308,7 +310,7 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache):
         all_parents = (parent_node for parent_node in rel.parents(node))
         explored_parents = (parent_node for parent_node in all_parents
                             if state.is_explored(parent_node))
-        similarity = max((util.stem_jaccard(node, parent_node)
+        similarity = max((util.word_jaccard(node, parent_node)
                           for parent_node in explored_parents),
                          default=None)
         if similarity is None:
@@ -373,6 +375,7 @@ def run_selection_procedure(max_nodes):
         s0 = sspace.SearchState(start_state)
         planner = search.BeamSearchPlanner(1)
         update_rule = lsearch.AggressiveBinaryUpdateRule()
+        update_condition = lsearch.SmallMarginOnCurrentNodeUpdateCondition()
         querying_rule = lsearch.SmallMarginOfCurrentNodeBinaryQueryingRule(0.2)
         restart_rule = lsearch.OnDequeingNegativeRestartFromScratchRule()
 
@@ -385,12 +388,13 @@ def run_selection_procedure(max_nodes):
             return "'{}'->'{}'".format(previous_node, state.action().node())
 
         teacher = lsearch.BinaryFeedbackStdInTeacher(state_to_node_pair)
+        # teacher = lsearch.BinaryFeedbackAlwaysPositiveTeacher()
 
         weight_vector = [1, -1, 1, -1, 1, 1, -1]
 
         learning_algo = lsearch.LearningSearch(
             s0, state_space, planner, goal_test, features, weight_vector,
-            querying_rule, teacher, update_rule, restart_rule,
+            querying_rule, teacher, update_condition, update_rule, restart_rule,
             state_to_node_name
         )
 
@@ -413,6 +417,6 @@ def run_selection_procedure(max_nodes):
                 node = state.action().node() if state.action() else "None"
                 depth = state.state().depth(node)
                 print("Iteration {:>5}, accuracy {:4.3f},"
-                      "weighted f1 {:4.3f}, topic: '{}', depth: {}"
-                      .format(niter, accuracy, weighted_f1, node, depth))
+                      "weighted f1 {:4.3f}, topic: '{}', depth: {}, frontier {}"
+                      .format(niter, accuracy, weighted_f1, node, depth, len(list(state.state().candidate_nodes()))))
             niter += 1

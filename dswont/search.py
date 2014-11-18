@@ -15,6 +15,7 @@
 import abc
 import heapq
 import itertools
+import operator
 import numpy as np
 
 from dswont import features as ftr
@@ -245,7 +246,7 @@ class HeuristicSearch(object):
         if current_state != self._next_states_precomputed_for:
             self._precomputed_next_cost_sate_pairs = \
                 sorted(self._compute_next_cost_state_pairs(current_state)
-                       , key=lambda pair: (pair[0], str(pair[1])))
+                       , key=operator.itemgetter(0))
             self._next_states_precomputed_for = current_state
         return self._precomputed_next_cost_sate_pairs
 

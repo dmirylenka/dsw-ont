@@ -23,4 +23,4 @@
 
 from dswont import category_explorer
 
-category_explorer.run_selection_procedure(10000)
+category_explorer.run_selection_procedure(500)

@@ -13,6 +13,7 @@
 #    limitations under the License.
 
 import json
+import itertools
 import logging
 import nltk
 import numpy as np
@@ -114,16 +115,19 @@ stopwords = {line.rstrip()
 words_re = re.compile('\w+')
 
 
-stemmer = nltk.stem.snowball.EnglishStemmer()
+# stemmer = nltk.stem.snowball.EnglishStemmer()
 
 
-def stem_word(word: str):
-    return stemmer.stem(word)
+# def stem_word(word: str):
+#     return stemmer.stem(word)
+
+
+def cheap_tokenize(string: str):
+    return string.split()
 
 
 def word_list(string: str):
-    return [token
-            for token in nltk.tokenize.word_tokenize(string)]
+    return cheap_tokenize(string)
 
 
 def jaccard_sim(set1: set, set2: set):
@@ -134,10 +138,16 @@ def without_stopwords(words):
     return [word for word in words if word not in stopwords]
 
 
-def stem_jaccard(str1, str2):
-    stems1 = set(stem_word(word) for word in without_stopwords(word_list(str1)))
-    stems2 = set(stem_word(word) for word in without_stopwords(word_list(str2)))
-    return jaccard_sim(stems1, stems2)
+# def stem_jaccard(str1, str2):
+#     stems1 = set(stem_word(word) for word in without_stopwords(word_list(str1)))
+#     stems2 = set(stem_word(word) for word in without_stopwords(word_list(str2)))
+#     return jaccard_sim(stems1, stems2)
+
+
+def word_jaccard(str1, str2):
+    words1 = set(without_stopwords(word_list(str1)))
+    words2 = set(without_stopwords(word_list(str2)))
+    return jaccard_sim(words1, words2)
 
 
 def pos_tag(string_or_tokens: str):
@@ -219,3 +229,11 @@ def accuracy_score(*params):
 
 def orgtable(df: pd.DataFrame):
     return [list(row.values) for idx, row in df.iterrows()]
+
+
+def format_nums(numbers, decimal_points):
+    one_number_format = ("{:." + str(decimal_points) + "f}")
+    all_numbers_format = ' '.join(
+        itertools.repeat(one_number_format, len(numbers)))
+    all_numbers_format = "[" + all_numbers_format + "]"
+    return all_numbers_format.format(*numbers)
