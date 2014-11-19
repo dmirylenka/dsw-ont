@@ -22,6 +22,10 @@ from dswont import search_space as sspace
 from dswont import util
 
 
+##==============================================================================
+## Definition of the main data types used in the learning search algorithm.
+##==============================================================================
+
 class UserFeedback(metaclass=abc.ABCMeta):
     """'Marker interface' for feedback that the can be given to the algorithm.
 
@@ -200,6 +204,41 @@ class MultiSelectFeedback(UserFeedback):
                                    self.other.copy())
 
 
+##==============================================================================
+## Definition of the abstract components of the learning search algorithm.
+##==============================================================================
+
+
+class QueryingCondition(metaclass=abc.ABCMeta):
+    """Decides if the feedback should be asked of the user.
+
+    """
+
+    @abc.abstractmethod
+    def feedback_required(self,
+                          learning_state: LearningSearchState,
+                          current_cost_state_pair: (float, sspace.SearchState),
+                          next_cost_state_pairs) -> UserFeedback:
+        """Returns the feedback that has to be asked of the user, or None.
+
+        """
+        pass
+
+
+class WeightUpdateCondition(metaclass=abc.ABCMeta):
+    """Decides if the feature weights should be updated.
+
+    """
+
+    @abc.abstractmethod
+    def should_update(self,
+                      learning_state: LearningSearchState,
+                      current_cost_state_pair: (float, sspace.SearchState),
+                      next_cost_state_pairs,
+                      feedback: UserFeedback):
+        return False
+
+
 class WeightUpdateRule(metaclass=abc.ABCMeta):
     """Specifies how the weights must be updated upon getting feedback.
 
@@ -210,6 +249,214 @@ class WeightUpdateRule(metaclass=abc.ABCMeta):
                       learning_state: LearningSearchState):
         return weight_vector
 
+
+class RestartOnFeedbackRule(metaclass=abc.ABCMeta):
+    """Decides if the search algorithm should be restarted (e.g. on mistake).
+
+    Also decides which states the algorithm should restart from.
+    
+    """
+    @abc.abstractmethod
+    def restart_states(self,
+                       learning_state: LearningSearchState,
+                       start_state: sspace.SearchState,
+                       current_cost_state_pair: (float, sspace.SearchState),
+                       next_cost_state_pairs,
+                       feedback: UserFeedback):
+        """Returns the states from which to restart, if restart is required.
+
+        Returns None otherwise.
+
+        """
+        return None
+
+
+class Teacher(metaclass=abc.ABCMeta):
+    @abc.abstractmethod
+    def get_feedback(self, query: UserFeedback) -> UserFeedback:
+        pass
+
+
+##==============================================================================
+## Definition of the learning search algorithm itself.
+##==============================================================================
+
+class LearningSearch(search.FeatureBasedHeuristicSearch):
+    """A search algorithm that learns from the feedback.
+
+    """
+    def __init__(self,
+                 start: sspace.SearchState,
+                 space: sspace.StateSpace,
+                 planner: search.SearchPlanner,
+                 goal_test: 'sspace.SearchState -> bool',
+                 features: ftr.Features,
+                 weight_vector,
+                 querying_condition: QueryingCondition,
+                 teacher: Teacher,
+                 update_condition: WeightUpdateCondition,
+                 update_rule: WeightUpdateRule,
+                 restart_rule: RestartOnFeedbackRule,
+                 state_to_str,
+                 **params):
+        super().__init__(start, space, planner, goal_test, features,
+                         weight_vector, **params)
+        self._querying_condition = querying_condition
+        self._teacher = teacher
+        self._update_condition = update_condition
+        self._update_rule = update_rule
+        self._restart_rule = restart_rule
+        self._learning_state = LearningSearchState()
+        self._state_to_str = state_to_str
+        super().step()
+
+    def report_iteration(self,
+                         current_cost: float,
+                         current_state: sspace.SearchState,
+                         learning_state: LearningSearchState,
+                         next_cost_state_pairs):
+        print(
+            "Iteration {}, {} restarts, {} moves since restart, "
+            "{} feedback points, {} updates, current vector: {}."
+            .format(learning_state.iteration,
+                    learning_state.n_restarts,
+                    learning_state.moves_since_restart,
+                    learning_state.n_feedback,
+                    learning_state.n_updates,
+                    util.format_nums(self._weight_vector, 5)))
+        current_node = current_state.action().node()
+        node_string = self._state_to_str(current_state)
+        node_depth = current_state.state().depth(current_node)
+        print(
+            "Current state: {}(depth {}), {} nodes, "
+            "features: {}, score: {}."
+            .format(node_string,
+                    node_depth,
+                    current_state.state().size(),
+                    list(self._features.value_map(current_state).items()),
+                    -current_cost))
+
+
+    def step(self) -> (float, sspace.SearchState):
+        current_cost, current_state = self._planner.peek()
+        previous_learning_state = self._learning_state.new_iteration()
+        if not self._goal_test(current_state):
+            next_cost_state_pairs = self.next_cost_state_pairs()
+            self.report_iteration(current_cost, current_state,
+                                  previous_learning_state,
+                                  next_cost_state_pairs)
+            query = self._querying_condition.feedback_required(
+                previous_learning_state,
+                (current_cost, current_state),
+                next_cost_state_pairs
+            )
+            if query is not None:
+                feedback = self._teacher.get_feedback(query)
+                self._learning_state.record_feedback(feedback)
+                # TODO: check if update is needed (if weights actually change)
+                update_needed = self._update_condition.should_update(
+                    previous_learning_state,
+                    (current_cost, current_state),
+                    next_cost_state_pairs,
+                    feedback
+                )
+                if update_needed:
+                    updated_weights = self._update_rule.update_weights(
+                        self._weight_vector,
+                        feedback.map_features(self._features),
+                        previous_learning_state
+                    )
+                    print("Updated vector:\n{} + {} -> {}"
+                          .format(util.format_nums(self._weight_vector, 5),
+                                  util.format_nums(updated_weights -
+                                                   self._weight_vector, 5),
+                                  util.format_nums(updated_weights, 5)))
+                    self.weight_vector = updated_weights
+                    self._learning_state.record_update(updated_weights)
+                restart_states = self._restart_rule.restart_states(
+                    previous_learning_state,
+                    self._start,
+                    (current_cost, current_state),
+                    next_cost_state_pairs,
+                    feedback
+                )
+                if restart_states is not None:
+                    self.restart(restart_states)
+                    self._learning_state.record_restart()
+        super().step()
+        return current_cost, current_state
+
+
+##==============================================================================
+## Definition of the specific components of the learning search algorithm.
+##==============================================================================
+
+##------------------------------------------------------------------------------
+## Querying conditions
+
+class SmallMarginOfCurrentNodeBinaryQueryingCondition(QueryingCondition):
+
+    """Queries user for feedback on the dequeued state when its score is small.
+
+    The score is defined as minus cost of the state. The score is considered
+    small when it is less than 1 - alpha, where alpha is the input parameter.
+
+    """
+    def __init__(self, alpha):
+        self.alpha = alpha
+
+    def feedback_required(self,
+                          learning_state: LearningSearchState,
+                          current_cost_state_pair: (float, sspace.SearchState),
+                          next_cost_state_pairs) -> MultiBinaryFeedback:
+        cost, state = current_cost_state_pair
+        if -cost < 1 - self.alpha:
+            return MultiBinaryFeedback.query([state])
+        else:
+            return None
+
+
+##------------------------------------------------------------------------------
+## Update conditions
+
+class PerceptronMistakeOnCurrentNodeUpdateCondition(WeightUpdateCondition):
+    """Update if preceptron prediction on the current node contradicts feedback.
+
+    """
+
+    def should_update(self,
+                      learning_state: LearningSearchState,
+                      current_cost_state_pair: (float, sspace.SearchState),
+                      next_cost_state_pairs,
+                      feedback: MultiBinaryFeedback):
+        cost, node = current_cost_state_pair
+        score = -cost
+        node_is_pos = node in feedback.positive_points
+        node_is_neg = node in feedback.negative_points
+        assert not node_is_neg or not node_is_pos
+        return (node_is_neg and score >=0) or (node_is_pos and score <=0)
+
+
+class SmallMarginOnCurrentNodeUpdateCondition(WeightUpdateCondition):
+    """Update if the current node has small margin or was predicted incorrectly.
+
+    """
+
+    def should_update(self,
+                      learning_state: LearningSearchState,
+                      current_cost_state_pair: (float, sspace.SearchState),
+                      next_cost_state_pairs,
+                      feedback: MultiBinaryFeedback):
+        cost, node = current_cost_state_pair
+        score = -cost
+        node_is_pos = node in feedback.positive_points
+        node_is_neg = node in feedback.negative_points
+        assert not node_is_neg or not node_is_pos
+        return (node_is_neg and score > -1) or (node_is_pos and score < 1)
+
+
+##------------------------------------------------------------------------------
+## Update rules
 
 class PerceptronBinaryUpdateRule(WeightUpdateRule):
     """Implements the standard perceptron update: w <- w + y * x.
@@ -257,27 +504,10 @@ class AggressiveBinaryUpdateRule(PerceptronBinaryUpdateRule):
         return delta
 
 
-class RestartStatesOnFeedbackRule(metaclass=abc.ABCMeta):
-    """Decides if the search algorithm should be restarted (e.g. on mistake).
+##------------------------------------------------------------------------------
+## Restart rules
 
-    """
-
-    @abc.abstractmethod
-    def restart_states(self,
-                       learning_state: LearningSearchState,
-                       start_state: sspace.SearchState,
-                       current_cost_state_pair: (float, sspace.SearchState),
-                       next_cost_state_pairs,
-                       feedback: UserFeedback):
-        """Returns the states from which to restart, if restart is required.
-
-        Returns None otherwise.
-
-        """
-        return None
-
-
-class OnDequeingNegativeRestartFromScratchRule(RestartStatesOnFeedbackRule):
+class OnDequeingNegativeRestartFromScratchRule(RestartOnFeedbackRule):
     """Restarts from scratch when getting negative feedback on dequeued node.
 
     """
@@ -294,102 +524,11 @@ class OnDequeingNegativeRestartFromScratchRule(RestartStatesOnFeedbackRule):
             return None
 
 
-class WeightUpdateCondition(metaclass=abc.ABCMeta):
-    """Decides if the feature weights should be updated.
-
-    """
-
-    @abc.abstractmethod
-    def should_update(self,
-                      learning_state: LearningSearchState,
-                      current_cost_state_pair: (float, sspace.SearchState),
-                      next_cost_state_pairs,
-                      feedback: UserFeedback):
-        return False
-
-
-class PerceptronMistakeOnCurrentNodeUpdateCondition(WeightUpdateCondition):
-    """Update if preceptron prediction on the current node contradicts feedback.
-
-    """
-
-    def should_update(self,
-                      learning_state: LearningSearchState,
-                      current_cost_state_pair: (float, sspace.SearchState),
-                      next_cost_state_pairs,
-                      feedback: MultiBinaryFeedback):
-        cost, node = current_cost_state_pair
-        score = -cost
-        node_is_pos = node in feedback.positive_points
-        node_is_neg = node in feedback.negative_points
-        assert not node_is_neg or not node_is_pos
-        return (node_is_neg and score >=0) or (node_is_pos and score <=0)
-
-
-class SmallMarginOnCurrentNodeUpdateCondition(WeightUpdateCondition):
-    """Update if the current node has small margin or was predicted incorrectly.
-
-    """
-
-    def should_update(self,
-                      learning_state: LearningSearchState,
-                      current_cost_state_pair: (float, sspace.SearchState),
-                      next_cost_state_pairs,
-                      feedback: MultiBinaryFeedback):
-        cost, node = current_cost_state_pair
-        score = -cost
-        node_is_pos = node in feedback.positive_points
-        node_is_neg = node in feedback.negative_points
-        assert not node_is_neg or not node_is_pos
-        return (node_is_neg and score > -1) or (node_is_pos and score < 1)
-
-
-class QueryingRule(metaclass=abc.ABCMeta):
-    """Decides if the feedback should be asked of the user.
-
-    """
-
-    @abc.abstractmethod
-    def feedback_required(self,
-                          learning_state: LearningSearchState,
-                          current_cost_state_pair: (float, sspace.SearchState),
-                          next_cost_state_pairs) -> UserFeedback:
-        """Returns the feedback that has to be asked of the user, or None.
-
-        """
-        pass
-
-
-class SmallMarginOfCurrentNodeBinaryQueryingRule(QueryingRule):
-
-    """Queries user for feedback on the dequeued state when its score is small.
-
-    The score is defined as minus cost of the state. The score is considered
-    small when it is less than 1 - alpha, where alpha is the input parameter.
-
-    """
-    def __init__(self, alpha):
-        self.alpha = alpha
-
-    def feedback_required(self,
-                          learning_state: LearningSearchState,
-                          current_cost_state_pair: (float, sspace.SearchState),
-                          next_cost_state_pairs) -> MultiBinaryFeedback:
-        cost, state = current_cost_state_pair
-        if -cost < 1 - self.alpha:
-            return MultiBinaryFeedback.query([state])
-        else:
-            return None
-
-
-class Teacher(metaclass=abc.ABCMeta):
-    @abc.abstractmethod
-    def get_feedback(self, query: UserFeedback) -> UserFeedback:
-        pass
-
+##------------------------------------------------------------------------------
+## Teachers
 
 class BinaryFeedbackAlwaysPositiveTeacher(Teacher):
-    """Dumb teacher that marks all given nodes as positive.
+    """Dumb teacher for binary feedback that marks all given nodes as positive.
     
     Useful for profiling.
     """
@@ -402,7 +541,9 @@ class BinaryFeedbackAlwaysPositiveTeacher(Teacher):
 
 
 class BinaryFeedbackStdInTeacher(Teacher):
+    """Teacher that asks for the binary user feedback from stdin.
 
+    """
     def __init__(self, state_to_str):
         self._state_to_str = state_to_str
 
@@ -447,105 +588,3 @@ class BinaryFeedbackStdInTeacher(Teacher):
 #         else:
 #             pass
 #         return self._cache[key]
-
-
-class LearningSearch(search.FeatureBasedHeuristicSearch):
-    """A search algorithm that learns from the feedback.
-
-    """
-    def __init__(self,
-                 start: sspace.SearchState,
-                 space: sspace.StateSpace,
-                 planner: search.SearchPlanner,
-                 goal_test: 'sspace.SearchState -> bool',
-                 features: ftr.Features,
-                 weight_vector,
-                 querying_rule: QueryingRule,
-                 teacher: Teacher,
-                 update_condition: WeightUpdateCondition,
-                 update_rule: WeightUpdateRule,
-                 restart_rule: RestartStatesOnFeedbackRule,
-                 state_to_str,
-                 **params):
-        super().__init__(start, space, planner, goal_test, features,
-                         weight_vector, **params)
-        self._querying_rule = querying_rule
-        self._teacher = teacher
-        self._update_condition = update_condition
-        self._update_rule = update_rule
-        self._restart_rule = restart_rule
-        self._learning_state = LearningSearchState()
-        self._state_to_str = state_to_str
-        super().step()
-
-    def report_iteration(self,
-                         current_cost: float,
-                         current_state: sspace.SearchState,
-                         learning_state: LearningSearchState,
-                         next_cost_state_pairs):
-        print(
-            "Iteration {}, {} restarts, {} moves since restart, "
-            "{} feedback points, {} updates, current vector: {}."
-            .format(learning_state.iteration,
-                    learning_state.n_restarts,
-                    learning_state.moves_since_restart,
-                    learning_state.n_feedback,
-                    learning_state.n_updates,
-                    util.format_nums(self._weight_vector, 5)))
-        current_node = current_state.action().node()
-        node_string = self._state_to_str(current_state)
-        node_depth = current_state.state().depth(current_node)
-        print(
-            "Current state: {}(depth {}), {} nodes, "
-            "features: {}, score: {}."
-            .format(node_string,
-                    node_depth,
-                    current_state.state().size(),
-                    list(self._features.value_map(current_state).items()),
-                    -current_cost))
-
-
-    def step(self) -> (float, sspace.SearchState):
-        current_cost, current_state = self._planner.peek()
-        previous_learning_state = self._learning_state.new_iteration()
-        if not self._goal_test(current_state):
-            next_cost_state_pairs = self.next_cost_state_pairs()
-            self.report_iteration(current_cost, current_state,
-                                  previous_learning_state,
-                                  next_cost_state_pairs)
-            query = self._querying_rule.feedback_required(
-                previous_learning_state,
-                (current_cost, current_state),
-                next_cost_state_pairs
-            )
-            if query is not None:
-                feedback = self._teacher.get_feedback(query)
-                self._learning_state.record_feedback(feedback)
-                # TODO: check if update is needed (if weights actually change)
-                update_needed = self._update_condition.should_update(
-                    previous_learning_state,
-                    (current_cost, current_state),
-                    next_cost_state_pairs,
-                    feedback
-                )
-                if update_needed:
-                    updated_weights = self._update_rule.update_weights(
-                        self._weight_vector,
-                        feedback.map_features(self._features),
-                        previous_learning_state
-                    )
-                    print("Updated vector: {}".format(util.format_nums(updated_weights, 5)))
-                    self.weight_vector = updated_weights
-                    self._learning_state.record_update(updated_weights)
-                restart_states = self._restart_rule.restart_states(
-                    previous_learning_state,
-                    self._start,
-                    (current_cost, current_state),
-                    next_cost_state_pairs,
-                    feedback
-                )
-                if restart_states is not None:
-                    self.restart(restart_states)
-                    self._learning_state.record_restart()
-        super().step()
-        return current_cost, current_state

@@ -77,6 +77,33 @@ class Feature(IFeature):
             return "Feature('{}', '{}')".format(self._name, self._description)
 
 
+class ProductFeature(IFeature):
+    """Feature whose value is the product of two other features' values.
+    
+    """
+    def __init__(self, feature1, feature2):
+        self._feature1 = feature1
+        self._feature2 = feature2
+        name = feature1.name() + "*" + feature2.name()
+        super().__init__(name, "Product feature " + name)
+
+    def compute_one(self, obj):
+        return self._feature1.compute_one(obj) * self._feature2.compute_one(obj)
+
+    def compute(self, objs):
+        fn1 = self._feature1.compute_one
+        fn2 = self._feature2.compute_one
+        result = np.fromiter((fn1(obj) * fn2(obj) for obj in objs),
+                             float,
+                             len(objs))
+        return result
+
+    def __repr__(self):
+        return "ProductFeature('{}', '{}')".format(str(self._feature1),
+                                                   str(self._feature2))
+
+CONSTANT_FEATURE = Feature('unity', lambda x: 1)
+
 class Features(object):
     """Represents a collection of feature functions.
 
@@ -111,6 +138,19 @@ class Features(object):
         assert feature_name not in self._features
         self._features[feature_name] = feature
         self._n_features += 1
+
+    def add_products(self):
+        n_features = self._n_features
+        if n_features > 1:
+            features = list(self._features.values())
+            for i in range(n_features - 1):
+                for j in range(i + 1, n_features):
+                    self.add_feature(ProductFeature(features[i], features[j]))
+        return self
+
+    def add_bias(self):
+        self.add_feature(CONSTANT_FEATURE)
+        return self
 
     def remove_feature(self, name: str):
         assert name in self._features

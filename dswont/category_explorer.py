@@ -359,15 +359,14 @@ def run_selection_procedure(max_nodes):
             'normalized_depth', depth_per_node_incremental, zero_value=0)
         max_depth_ftr = ftr.CachingAdditiveSearchStateFeature(
             'max_depth', max_depth_incremental, zero_value=0)
-        constant_feature = ftr.Feature('unity', lambda x: 1)
-        features = ftr.Features(constant_feature,
-                                depth_ftr,
+        features = ftr.Features(depth_ftr,
                                 # max_depth_ftr,
                                 relevant_links_ftr,
                                 irrelevant_links_ftr,
                                 leaves_ftr,
                                 parent_similarity_ftr,
-                                graph_size_ftr)
+                                graph_size_ftr).add_products().add_bias()
+        
 
         def goal_test(sstate: sspace.SearchState):
             return sstate.state().size() >= max_nodes
@@ -376,7 +375,7 @@ def run_selection_procedure(max_nodes):
         planner = search.BeamSearchPlanner(1)
         update_rule = lsearch.AggressiveBinaryUpdateRule()
         update_condition = lsearch.SmallMarginOnCurrentNodeUpdateCondition()
-        querying_rule = lsearch.SmallMarginOfCurrentNodeBinaryQueryingRule(0.2)
+        querying_rule = lsearch.SmallMarginOfCurrentNodeBinaryQueryingCondition(0.2)
         restart_rule = lsearch.OnDequeingNegativeRestartFromScratchRule()
 
         def state_to_node_name(state):
@@ -390,7 +389,12 @@ def run_selection_procedure(max_nodes):
         teacher = lsearch.BinaryFeedbackStdInTeacher(state_to_node_pair)
         # teacher = lsearch.BinaryFeedbackAlwaysPositiveTeacher()
 
-        weight_vector = [1, -1, 1, -1, 1, 1, -1]
+        # Weights for the ordinary features.
+        weight_vector = [-1, 1, -1, 1, 1, -1]
+        # Weights for the product features.
+        weight_vector += [0] * (features.n_features() - len(weight_vector) - 1)
+        # weight for the bias feature
+        weight_vector += [1]
 
         learning_algo = lsearch.LearningSearch(
             s0, state_space, planner, goal_test, features, weight_vector,
