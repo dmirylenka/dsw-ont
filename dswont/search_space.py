@@ -22,21 +22,39 @@ import abc
 class State(metaclass=abc.ABCMeta):
     """Represents the point in the a space that we want to navigate.
 
-    Arbitrary object (including standard types), treated as immutable.
+    A hashable object that should be treated as immutable.
     Works together with Action.
-    """
-    pass
 
+    """
+    
+    @abc.abstractmethod
+    def __hash__(self):
+        return id(self)
+
+    @abc.abstractmethod
+    def __eq__(self, other):
+        return self is other
+    
 
 class Action(metaclass=abc.ABCMeta):
     """Represents a transformation of the State objects.
 
+    A hashable object that should be treated as immutable.
     Returns the new state without changing the original.
+    Works together with State.
     """
 
     @abc.abstractmethod
     def next(self, state: State) -> State:
         return None
+
+    @abc.abstractmethod
+    def __hash__(self):
+        return id(self)
+
+    @abc.abstractmethod
+    def __eq__(self, other):
+        return self is other
 
 
 class SearchState(metaclass=abc.ABCMeta):
@@ -44,6 +62,11 @@ class SearchState(metaclass=abc.ABCMeta):
 
     Contains the information about the point in space being visited, the action
     that brought the algorithm to this point, and the previous SearchState.
+
+    Note that __hash__ and __eq__ are implemented in terms of the previous state
+    and the action in case the SearchState is LazyState (in order not to
+    'materialize' it without need).
+
     """
 
     def __init__(self, state:State, action: Action=None, previous=None):
@@ -59,6 +82,27 @@ class SearchState(metaclass=abc.ABCMeta):
 
     def previous(self):
         return self._previous
+
+    def __hash__(self):
+        if self._previous is None:
+            # No _action means initial state, and it's ok to 'materialize' it.
+            return hash(self.state())
+        else:
+            return hash((self._previous.state(), self._action))
+
+    def __eq__(self, other):
+        if other is None:
+            return False
+        elif self._previous is None:
+            return other._previous is None and self._action == other._action
+        else:
+            return other._previous is not None and\
+                self._previous.state() == other._previous.state() and\
+                self._action == other._action
+
+    def __str__(self):
+        prev_str = str(self._previous.state()) if self._previous else 'None'
+        return "{}->{}".format(prev_str, str(self._action))
 
     def __repr__(self):
         return "SearchState({}, {}, ...)".format(
@@ -84,8 +128,13 @@ class LazyState(SearchState):
             self._state = self._action.next(previous_state)
         return self._state
 
+    def __str__(self):
+        return "LazyState({}, {})".format(
+            str(self._previous.state()),
+            str(self._action))
+
     def __repr__(self):
-        return "LazyState({}, {}, ...)".format(
+        return "LazyState({}, {})".format(
             repr(self._previous.state()),
             repr(self._action))
 
