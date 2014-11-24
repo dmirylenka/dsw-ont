@@ -15,6 +15,7 @@
 import collections
 import funktown
 import logging
+import operator
 
 from dswont import dbpedia
 from dswont import features as ftr
@@ -48,13 +49,16 @@ class CategoryGraphState(sspace.State):
     def initial_state(cls, root):
         node_info = collections.OrderedDict()
         node_info[root] = {'status': NODE_STATE_CANDIDATE, 'depth_estimate': 0}
-        return CategoryGraphState(funktown.ImmutableDict(node_info), size=0)
+        return CategoryGraphState(funktown.ImmutableDict(node_info),
+                                  size=0, hash_value=hash(root), last_node=root)
 
-    def __init__(self, node_info=None, size=0):
+    def __init__(self, node_info, size, hash_value, last_node):
         if node_info is None:
             node_info = funktown.ImmutableDict()
         self._size = size
         self._node_info = node_info
+        self._hash_value = hash_value
+        self._last_node = last_node
 
     def size(self):
         return self._size
@@ -85,9 +89,26 @@ class CategoryGraphState(sspace.State):
         return [self.is_explored(dbpedia.to_title(topic))
                 for topic in topics]
 
+    def __hash__(self):
+        return self._hash_value
+
+    def __eq__(self, other):
+        if other is None:
+            return False
+        elif self is other:
+            return True
+        elif not isinstance(other, CategoryGraphState):
+            return False
+        elif self._hash_value != other._hash_value:
+            return False
+        else:
+            return set(self.explored_nodes()) == set(other.explored_nodes())
+
+    def __str__(self):
+        return "{}+'{}'".format(self._size - 1, self._last_node)
+
     def __repr__(self):
         return "CategoryGraphState({})".format(repr(self._node_info))
-
 
 class AddNodeAction(sspace.Action):
     """Action that describes moving between CategoryGraphState-s.
@@ -139,10 +160,28 @@ class AddNodeAction(sspace.Action):
                 {'status': child_status, 'depth_estimate':child_depth})
 
         # Return the 'updated' state that structurally shares most of the data.
-        return CategoryGraphState(updated_node_infos, state.size() + 1)
+        hash_value = operator.xor(hash(state), hash(node_added))
+        return CategoryGraphState(updated_node_infos,
+                                  state.size() + 1, hash_value, node_added)
+
+    def __hash__(self):
+        return hash(self._node)
+
+    def __eq__(self, other):
+        if other is None:
+            return False
+        elif self is other:
+            return True
+        elif not isinstance(other, AddNodeAction):
+            return False
+        else:
+            return self._node == other._node
+
+    def __str__(self):
+        return "+'{}'".format(self._node)
 
     def __repr__(self):
-        return "AddNodeAction('{}')".format(self._node)
+        return "AddNodeAction({})".format(self._node)
 
 
 class CategoryGraphStateSpace(sspace.StateSpace):
@@ -359,25 +398,28 @@ def run_selection_procedure(max_nodes):
             'normalized_depth', depth_per_node_incremental, zero_value=0)
         max_depth_ftr = ftr.CachingAdditiveSearchStateFeature(
             'max_depth', max_depth_incremental, zero_value=0)
-        constant_feature = ftr.Feature('unity', lambda x: 1)
-        features = ftr.Features(constant_feature,
-                                depth_ftr,
+        features = ftr.Features(depth_ftr,
                                 # max_depth_ftr,
                                 relevant_links_ftr,
                                 irrelevant_links_ftr,
                                 leaves_ftr,
                                 parent_similarity_ftr,
-                                graph_size_ftr)
+                                graph_size_ftr).add_products().add_bias()
+        
 
         def goal_test(sstate: sspace.SearchState):
             return sstate.state().size() >= max_nodes
 
         s0 = sspace.SearchState(start_state)
         planner = search.BeamSearchPlanner(1)
-        update_rule = lsearch.AggressiveBinaryUpdateRule()
-        update_condition = lsearch.SmallMarginOnCurrentNodeUpdateCondition()
-        querying_rule = lsearch.SmallMarginOfCurrentNodeBinaryQueryingRule(0.2)
-        restart_rule = lsearch.OnDequeingNegativeRestartFromScratchRule()
+        
+        # querying_rule = lsearch.SmallMarginOfCurrentNodeBinaryQueryingCondition(0.2)
+        querying_rule = lsearch.ScoreDecreaseBinaryQueryingCondition(0.05)
+        update_condition = lsearch.PreferenceFeedbackUpdateCondition()
+        update_rule = lsearch.AggressivePreferenceUpdateRule(margin=0)
+        update_rule = lsearch.PerceptronPreferenceUpdateRule()
+        # restart_rule = lsearch.OnDequeingNegativeRestartFromScratchRule()
+        restart_rule = lsearch.OnPreferenceDisagreementRestartFromScratchRule()
 
         def state_to_node_name(state):
             return "'{}'".format(state.action().node())
@@ -387,10 +429,16 @@ def run_selection_procedure(max_nodes):
             previous_node = previous_action.node() if previous_action else None
             return "'{}'->'{}'".format(previous_node, state.action().node())
 
-        teacher = lsearch.BinaryFeedbackStdInTeacher(state_to_node_pair)
+        # teacher = lsearch.BinaryFeedbackStdInTeacher(state_to_node_pair)
         # teacher = lsearch.BinaryFeedbackAlwaysPositiveTeacher()
+        teacher = lsearch.PreferenceFeedbackStdInTeacher(state_to_node_name)
 
-        weight_vector = [1, -1, 1, -1, 1, 1, -1]
+        # Weights for the ordinary features.
+        weight_vector = [-1, 1, -1, 1, 1, -1]
+        # Weights for the product features.
+        weight_vector += [0] * (features.n_features() - len(weight_vector) - 1)
+        # weight for the bias feature
+        weight_vector += [1]
 
         learning_algo = lsearch.LearningSearch(
             s0, state_space, planner, goal_test, features, weight_vector,
