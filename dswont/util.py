@@ -237,3 +237,6 @@ def format_nums(numbers, decimal_points):
         itertools.repeat(one_number_format, len(numbers)))
     all_numbers_format = "[" + all_numbers_format + "]"
     return all_numbers_format.format(*numbers)
+
+def format_list(stuff):
+    return '[' + ', '.join(str(x) for x in stuff) + ']'
