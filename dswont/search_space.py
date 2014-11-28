@@ -83,6 +83,14 @@ class SearchState(metaclass=abc.ABCMeta):
     def previous(self):
         return self._previous
 
+    def action_seq(self):
+        result = []
+        current_state = self
+        while current_state._action:
+            result.append(current_state._action)
+            current_state = current_state._previous
+        return list(reversed(result))
+
     def __hash__(self):
         if self._previous is None:
             # No _action means initial state, and it's ok to 'materialize' it.

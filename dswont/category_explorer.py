@@ -199,9 +199,9 @@ class CategoryGraphStateSpace(sspace.StateSpace):
                 for candidate in state.candidate_nodes()]
 
 
-################################################################################
+##==============================================================================
 ## Definition of features
-################################################################################
+##==============================================================================
 
 def relevant_links_per_node_incremental_fn(rel: wiki.CategoryRelationCache):
     """Computes corrected average number of links between the explored nodes.
@@ -295,7 +295,7 @@ def normalized_graph_size(sstate: sspace.SearchState):
     # and we want to avoid materializing it.
     previous_sstate = sstate.previous()
     if previous_sstate is None:
-        return 1.0
+        return 0
     else:
         return 1 - 1.0 / (previous_sstate.state().size() + 1)
 
@@ -364,9 +364,9 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache):
     return parent_child_similarity_incremental
 
 
-################################################################################
+##==============================================================================
 ## Definition of the interactive learning procedure.
-################################################################################
+##==============================================================================
 
 def run_selection_procedure(max_nodes):
     with wiki.CategoryRelationCache() as rel:
@@ -399,52 +399,42 @@ def run_selection_procedure(max_nodes):
         max_depth_ftr = ftr.CachingAdditiveSearchStateFeature(
             'max_depth', max_depth_incremental, zero_value=0)
         features = ftr.Features(depth_ftr,
+                                # # Max depth is a too aggressive feature.
                                 # max_depth_ftr,
                                 relevant_links_ftr,
                                 irrelevant_links_ftr,
                                 leaves_ftr,
                                 parent_similarity_ftr,
-                                graph_size_ftr).add_products().add_bias()
+                                graph_size_ftr).add_products()
+                               # # With preference updates, bias is never used.
+                               #.add_bias()
         
-
-        def goal_test(sstate: sspace.SearchState):
-            return sstate.state().size() >= max_nodes
-
         s0 = sspace.SearchState(start_state)
         planner = search.BeamSearchPlanner(1)
         
-        # querying_rule = lsearch.SmallMarginOfCurrentNodeBinaryQueryingCondition(0.2)
-        querying_rule = lsearch.ScoreDecreaseBinaryQueryingCondition(0.05)
-        update_condition = lsearch.PreferenceFeedbackUpdateCondition()
-        update_rule = lsearch.AggressivePreferenceUpdateRule(margin=0)
-        update_rule = lsearch.PerceptronPreferenceUpdateRule()
-        # restart_rule = lsearch.OnDequeingNegativeRestartFromScratchRule()
-        restart_rule = lsearch.OnPreferenceDisagreementRestartFromScratchRule()
-
         def state_to_node_name(state):
             return "'{}'".format(state.action().node())
 
-        def state_to_node_pair(state):
-            previous_action = state.previous().action()
-            previous_node = previous_action.node() if previous_action else None
-            return "'{}'->'{}'".format(previous_node, state.action().node())
-
-        # teacher = lsearch.BinaryFeedbackStdInTeacher(state_to_node_pair)
-        # teacher = lsearch.BinaryFeedbackAlwaysPositiveTeacher()
-        teacher = lsearch.PreferenceFeedbackStdInTeacher(state_to_node_name)
-
         # Weights for the ordinary features.
-        weight_vector = [-1, 1, -1, 1, 1, -1]
+        # weight_vector = [-1, 1, -1, 1, 1, -1]
+        weight_vector = [0, 0, 0, 0, 0, 0]
         # Weights for the product features.
-        weight_vector += [0] * (features.n_features() - len(weight_vector) - 1)
-        # weight for the bias feature
-        weight_vector += [1]
+        weight_vector += [0] * (features.n_features() - len(weight_vector))
+        # # weight for the bias feature
+        # weight_vector += [1]
+
+        pipeline = lsearch.LearningSearchPipeline(
+            (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(.1),
+             lsearch.BinaryFeedbackOnNextNode(),
+             lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+             lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
+             lsearch.PassiveAggressivePreferenceLearner(weight_vector, features, .1),
+             lsearch.AlwaysRestartOnFeedbackCondition(),
+             lsearch.NeverStopCondition()))
 
         learning_algo = lsearch.LearningSearch(
-            s0, state_space, planner, goal_test, features, weight_vector,
-            querying_rule, teacher, update_condition, update_rule, restart_rule,
-            state_to_node_name
-        )
+                s0, state_space, planner, features, weight_vector, pipeline)
 
         data = topics.default_data()
         accuracies = []
