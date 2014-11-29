@@ -413,13 +413,13 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
                  planner: search.SearchPlanner,
                  features: ftr.Features,
                  initial_weight_vector,
-                 iteration_pipeline,
+                 iteration_pipelines,
                  **params):
         goal_test = lambda state: False
         super().__init__(start, space, planner, goal_test, features,
                          initial_weight_vector, **params)
         self._learning_log = LearningSearchLog()
-        self._pipeline = iteration_pipeline
+        self._pipelines = iteration_pipelines
         super().step()
 
     def report_iteration(self,
@@ -455,25 +455,28 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
 
         learning_log = self._learning_log.new_iteration()
         next_cost_state_pairs = self.next_cost_state_pairs()
-        pipeline = self._pipeline
+        restart = False
 
-        iteration = LearningSearchIteration(
-            current_cost_state_pair=(current_cost, current_state),
-            next_cost_state_pairs=next_cost_state_pairs)
+        for pipeline in self._pipelines:
+            iteration = LearningSearchIteration(
+                current_cost_state_pair=(current_cost, current_state),
+                next_cost_state_pairs=next_cost_state_pairs)
 
-        self.report_iteration(iteration,
-                              learning_log)
+            self.report_iteration(iteration,
+                                  learning_log)
 
-        iteration = pipeline.process(iteration, learning_log)
+            iteration = pipeline.process(iteration, learning_log)
         
-        if iteration.feedback_given:
-            self._learning_log.record_feedback(iteration.feedback_given)
+            if iteration.feedback_given:
+                self._learning_log.record_feedback(iteration.feedback_given)
 
-        if iteration.update_weights:
-            self.weight_vector = iteration.weights
-            self._learning_log.record_update(iteration.weights)
+            if iteration.update_weights:
+                self.weight_vector = iteration.weights
+                self._learning_log.record_update(iteration.weights)
+            
+            restart = restart and iteration.restart
 
-        if iteration.restart:
+        if restart:
             print("\n!!! RESTART CONDITION !!!\n")
             self.restart([self._start])
             self._learning_log.record_restart()

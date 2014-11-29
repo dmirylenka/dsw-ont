@@ -463,7 +463,7 @@ def run_selection_procedure(max_nodes):
              lsearch.NeverStopCondition()))
 
         learning_algo = lsearch.LearningSearch(
-                s0, state_space, planner, features, weight_vector, pipeline)
+                s0, state_space, planner, features, weight_vector, [pipeline])
 
         data = topics.default_data()
         accuracies = []
