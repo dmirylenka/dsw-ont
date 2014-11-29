@@ -474,7 +474,7 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
             self._learning_log.record_update(iteration.weights)
 
         if iteration.restart:
-            # print("\n!!! RESTART CONDITION !!!\n")
+            print("\n!!! RESTART CONDITION !!!\n")
             self.restart([self._start])
             self._learning_log.record_restart()
 
@@ -618,7 +618,7 @@ class SmallAbsoluteGradientQueryingCondition(QueryingConditionStep):
                   iteration: LearningSearchIteration,
                   log: LearningSearchLog):
         current_cost, current_state = iteration.current_cost_state_pair
-        best_next_cost, best_next_state = iteration.next_cost_state_pairs[1]
+        best_next_cost, best_next_state = iteration.next_cost_state_pairs[0]
         if abs(-best_next_cost + current_cost) < self.gamma:
             return SmallAbsoluteGradient(current_state, -current_cost,
                                          best_next_state, -best_next_cost)
@@ -635,7 +635,7 @@ class NextNotMuchBetterThanCurrentQueryingCondition(QueryingConditionStep):
                   iteration: LearningSearchIteration,
                   log: LearningSearchLog):
         current_cost, current_state = iteration.current_cost_state_pair
-        best_next_cost, best_next_state = iteration.next_cost_state_pairs[1]
+        best_next_cost, best_next_state = iteration.next_cost_state_pairs[0]
         if -best_next_cost + current_cost < self.gamma:
             return NextNotMuchBetterThanCurrent(
                 current_state, -current_cost, best_next_state, -best_next_cost)
@@ -654,7 +654,7 @@ class BinaryFeedbackOnNextNode(FeedbackTypeSelectionStep):
         """Returns the type of feedback that has to be asked, or None.
 
         """
-        best_next_cost, best_next_state = iteration.next_cost_state_pairs[1]
+        best_next_cost, best_next_state = iteration.next_cost_state_pairs[0]
         return MultiBinaryFeedback.query([best_next_state])
 
 
@@ -882,6 +882,12 @@ class AlwaysRestartOnFeedbackCondition(RestartConditionStep):
                        log: LearningSearchLog) -> bool:
         return True
 
+class NeverRestartOnFeedbackCondition(RestartConditionStep):
+    def should_restart(self,
+                       iteration: LearningSearchIteration,
+                       log: LearningSearchLog) -> bool:
+        print("!!!!!!!!!!! YO !")
+        return False
 
 ##------------------------------------------------------------------------------
 ## Stop condition

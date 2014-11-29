@@ -203,7 +203,8 @@ class CategoryGraphStateSpace(sspace.StateSpace):
 ## Definition of features
 ##==============================================================================
 
-def relevant_links_per_node_incremental_fn(rel: wiki.CategoryRelationCache):
+def relevant_links_incremental_fn(rel: wiki.CategoryRelationCache,
+                                           normalized=True):
     """Computes corrected average number of links between the explored nodes.
     
     The precise value is (nlinks + 1) / nnodes.
@@ -211,14 +212,14 @@ def relevant_links_per_node_incremental_fn(rel: wiki.CategoryRelationCache):
     
     """
 
-    def relevant_links_per_node_incremental(action: AddNodeAction,
-                                            prev_sstate: sspace.SearchState,
-                                            prev_value):
+    def relevant_links_incremental(action: AddNodeAction,
+                                   prev_sstate: sspace.SearchState,
+                                   prev_value):
         new_links = set()
         state = prev_sstate.state()
         nnodes = state.size()
-        if nnodes == 0:
-            return 1
+        # if nnodes == 0:
+        #     return 1
         node = action.node()
         for parent in rel.parents(node):
             if state.is_explored(parent):
@@ -226,27 +227,29 @@ def relevant_links_per_node_incremental_fn(rel: wiki.CategoryRelationCache):
         for child in rel.children(node):
             if state.is_explored(child):
                 new_links.add((node, child))
-        return (nnodes * prev_value + len(new_links)) / (nnodes + 1)
+        if normalized:
+            return (nnodes * prev_value + len(new_links)) / (nnodes + 1)
+        else:
+            return prev_value + len(new_links)
 
-    return relevant_links_per_node_incremental
+    return relevant_links_incremental
 
 
-def irrelevant_links_per_node_incremental_fn(rel: wiki.CategoryRelationCache):
+def irrelevant_links_incremental_fn(rel: wiki.CategoryRelationCache,
+                                             normalized=True):
     """Computes the average number of links from irrelevant to relevant nodes.
 
     The value is computed incrementally based on the new added node.
     
     """
 
-    def irrelevant_links_per_node_incremental(action: AddNodeAction,
-                                              prev_sstate: sspace.SearchState,
-                                              prev_value):
+    def irrelevant_links_incremental(action: AddNodeAction,
+                                     prev_sstate: sspace.SearchState,
+                                     prev_value):
         links_added = set()
         links_removed = set()
         state = prev_sstate.state()
         nnodes = state.size()
-        if nnodes == 0:
-            return 0
         node = action.node()
         for parent in rel.parents(node):
             if not state.is_explored(parent):
@@ -255,21 +258,29 @@ def irrelevant_links_per_node_incremental_fn(rel: wiki.CategoryRelationCache):
             if state.is_explored(child):
                 links_removed.add((node, child))
         nlink_diff = len(links_added) - len(links_removed)
-        return (nnodes * prev_value + nlink_diff) / (nnodes + 1)
+        if normalized:
+            return (nnodes * prev_value + nlink_diff) / (nnodes + 1)
+        else:
+            return prev_value + nlink_diff
 
-    return irrelevant_links_per_node_incremental
+    return irrelevant_links_incremental
 
 
-def depth_per_node_incremental(action, prev_sstate, prev_value):
-    """Computes the average estimated depth of the explored nodes.
+def depth_incremental_fn(normalized=True):
+    def depth_incremental(action, prev_sstate, prev_value):
+        """Computes the average estimated depth of the explored nodes.
     
-    The value is computed incrementally based on the depth of the added node.
+        The value is computed incrementally based on the depth of the added node.
     
-    """
-    state = prev_sstate.state()
-    nnodes = state.size()
-    node_depth = state.depth(action.node())
-    return (nnodes * prev_value + node_depth) / (nnodes + 1)
+        """
+        state = prev_sstate.state()
+        nnodes = state.size()
+        node_depth = state.depth(action.node())
+        if normalized:
+            return (nnodes * prev_value + node_depth) / (nnodes + 1)
+        else:
+            return prev_value + node_depth
+    return depth_incremental
 
 
 def max_depth_incremental(action, prev_sstate, prev_value):
@@ -285,29 +296,36 @@ def max_depth_incremental(action, prev_sstate, prev_value):
         return 0
 
 
-def normalized_graph_size(sstate: sspace.SearchState):
-    """Computes the inverse of the size of the category graph.
+def graph_size_fn(normalized=True):
+    def graph_size(sstate: sspace.SearchState):
+        """Computes the inverse of the size of the category graph.
+    
+        """
+    
+        # Note that we are computing the size of the category graph indirectly,
+        # through the previous state. This because our current state may be lazy,
+        # and we want to avoid materializing it.
+        previous_sstate = sstate.previous()
+        if previous_sstate is None:
+            return 0
+        else:
+            nnodes = previous_sstate.state().size() + 1
+            if normalized:
+                return 1 - 1.0 / nnodes
+            else:
+                return nnodes
+    return graph_size
 
-    """
 
-    # Note that we are computing the size of the category graph indirectly,
-    # through the previous state. This because our current state may be lazy,
-    # and we want to avoid materializing it.
-    previous_sstate = sstate.previous()
-    if previous_sstate is None:
-        return 0
-    else:
-        return 1 - 1.0 / (previous_sstate.state().size() + 1)
-
-
-def proportion_of_leaf_nodes_incremental_fn(rel: wiki.CategoryRelationCache):
+def leaf_nodes_incremental_fn(rel: wiki.CategoryRelationCache,
+                              normalized=True):
     """Computes the average number of links from irrelevant to relevant nodes.
 
     The value is computed incrementally based on the new added node.
     
     """
 
-    def proportion_of_leaf_nodes_incremental(action: AddNodeAction,
+    def leaf_nodes_incremental(action: AddNodeAction,
                                              prev_sstate: sspace.SearchState,
                                              prev_value):
         state = prev_sstate.state()
@@ -316,12 +334,16 @@ def proportion_of_leaf_nodes_incremental_fn(rel: wiki.CategoryRelationCache):
             return 0
         node = action.node()
         is_leaf = int(len(rel.children(node)) == 0)
-        return (nnodes * prev_value + is_leaf) / (nnodes + 1)
+        if normalized:
+            return (nnodes * prev_value + is_leaf) / (nnodes + 1)
+        else:
+            return prev_value + is_leaf
 
-    return proportion_of_leaf_nodes_incremental
+    return leaf_nodes_incremental
 
 
-def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache):
+def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache,
+                                           normalized=True):
     """Computes the average similarity between all relevant parent-child pairs.
 
     The similarity is measures as the Jaccard index between the sets of
@@ -359,7 +381,10 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache):
                                 .format(node))
                 nodes_with_no_parents.add(node)
 
-        return (nnodes * prev_value + similarity) / (nnodes + 1)
+        if normalized:
+            return (nnodes * prev_value + similarity) / (nnodes + 1)
+        else:
+            return prev_value + similarity
 
     return parent_child_similarity_incremental
 
@@ -370,34 +395,34 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache):
 
 def run_selection_procedure(max_nodes):
     with wiki.CategoryRelationCache() as rel:
-        root = 'Computing'
+        root = 'Software'
         start_state = CategoryGraphState.initial_state(root)
 
         state_space = CategoryGraphStateSpace(rel)
 
         relevant_links_ftr = ftr.CachingAdditiveSearchStateFeature(
             "relevant_links",
-            relevant_links_per_node_incremental_fn(rel),
-            zero_value=1)
+            relevant_links_incremental_fn(rel, False),
+            zero_value=0)
         irrelevant_links_ftr = ftr.CachingAdditiveSearchStateFeature(
             "irrelevant_links",
-            irrelevant_links_per_node_incremental_fn(rel),
+            irrelevant_links_incremental_fn(rel, False),
             zero_value=0)
         leaves_ftr = ftr.CachingAdditiveSearchStateFeature(
             "frac_leaves",
-            proportion_of_leaf_nodes_incremental_fn(rel),
+            leaf_nodes_incremental_fn(rel, False),
             zero_value=0)
         parent_similarity_ftr = ftr.CachingAdditiveSearchStateFeature(
             "parent_similarity",
-            parent_child_similarity_incremental_fn(rel),
+            parent_child_similarity_incremental_fn(rel, False),
             zero_value=0)
-        graph_size_ftr = ftr.Feature('graph_size', normalized_graph_size)
+        graph_size_ftr = ftr.Feature('graph_size', graph_size_fn(False))
 
 
         depth_ftr = ftr.CachingAdditiveSearchStateFeature(
-            'normalized_depth', depth_per_node_incremental, zero_value=0)
-        max_depth_ftr = ftr.CachingAdditiveSearchStateFeature(
-            'max_depth', max_depth_incremental, zero_value=0)
+            'normalized_depth', depth_incremental_fn(False), zero_value=0)
+        # max_depth_ftr = ftr.CachingAdditiveSearchStateFeature(
+        #     'max_depth', max_depth_incremental, zero_value=0)
         features = ftr.Features(depth_ftr,
                                 # # Max depth is a too aggressive feature.
                                 # max_depth_ftr,
@@ -405,7 +430,9 @@ def run_selection_procedure(max_nodes):
                                 irrelevant_links_ftr,
                                 leaves_ftr,
                                 parent_similarity_ftr,
-                                graph_size_ftr).add_products()
+                                # graph_size_ftr
+        )
+                               #.add_products()
                                # # With preference updates, bias is never used.
                                #.add_bias()
         
@@ -416,21 +443,23 @@ def run_selection_procedure(max_nodes):
             return "'{}'".format(state.action().node())
 
         # Weights for the ordinary features.
-        # weight_vector = [-1, 1, -1, 1, 1, -1]
-        weight_vector = [0, 0, 0, 0, 0, 0]
+        # weight_vector = [-1, 1, -1, 1, 1]
+        weight_vector = [0, 0, 0, 0, 0]
         # Weights for the product features.
-        weight_vector += [0] * (features.n_features() - len(weight_vector))
+        # weight_vector += [0] * (features.n_features() - len(weight_vector))
         # # weight for the bias feature
         # weight_vector += [1]
 
         pipeline = lsearch.LearningSearchPipeline(
-            (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(.1),
+            (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(1),
              lsearch.BinaryFeedbackOnNextNode(),
              lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
-             lsearch.PassiveAggressivePreferenceLearner(weight_vector, features, .1),
+             lsearch.PassiveAggressivePreferenceLearner(weight_vector, features, 1),
+             # lsearch.PerceptronPreferenceLearner(weight_vector, features),
              lsearch.AlwaysRestartOnFeedbackCondition(),
+             # lsearch.NeverRestartOnFeedbackCondition(),
              lsearch.NeverStopCondition()))
 
         learning_algo = lsearch.LearningSearch(
