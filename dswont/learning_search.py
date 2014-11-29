@@ -886,7 +886,6 @@ class NeverRestartOnFeedbackCondition(RestartConditionStep):
     def should_restart(self,
                        iteration: LearningSearchIteration,
                        log: LearningSearchLog) -> bool:
-        print("!!!!!!!!!!! YO !")
         return False
 
 ##------------------------------------------------------------------------------
