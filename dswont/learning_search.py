@@ -55,6 +55,13 @@ class UserFeedbackInput(metaclass=abc.ABCMeta):
         """
         return cls(points)
 
+    @classmethod
+    @abc.abstractmethod
+    def points(cls):
+        """Returns a query -- empty feedback without any user input.
+        """
+        return []
+
 
 class LearningSearchLog(object):
     """The state of the learning search algorithm.
@@ -63,11 +70,13 @@ class LearningSearchLog(object):
 
     """
 
-    def __init__(self, iteration=0, restarts=[], feedback=None, weights=None):
+    def __init__(self, iteration=0, restarts=None, feedback=None, weights=None):
+        if not restarts:
+            restarts = []
         self._iteration = iteration
         self._restarts = restarts
-        self._feedback = feedback or collections.OrderedDict()
-        self._weights = weights or collections.OrderedDict()
+        self._feedback = feedback or util.DefaultOrderedDict(list)
+        self._weights = weights or util.DefaultOrderedDict(list)
 
     def snapshot(self):
         return LearningSearchLogSnapshot(self, self.iteration)
@@ -94,8 +103,8 @@ class LearningSearchLog(object):
         return old_state
 
     def record_feedback(self, feedback: UserFeedbackInput):
-        assert self._iteration not in self._feedback
-        self._feedback[self._iteration] = feedback
+        assert (not self._feedback) or max(self._feedback) <= self._iteration
+        self._feedback[self._iteration].append(feedback)
         return self
 
     def record_restart(self):
@@ -103,8 +112,8 @@ class LearningSearchLog(object):
         return self
 
     def record_update(self, weights):
-        assert self._iteration not in self._weights
-        self._weights[self._iteration] = weights
+        assert (not self._weights) or max(self._weights) <= self._iteration
+        self._weights[self._iteration].append(weights)
         return self
 
     @property
@@ -180,10 +189,20 @@ class LearningSearchIteration(collections.namedtuple('LearningSearchIteration',
     def update(self, **kwargs):
         return self._replace(**kwargs)
 
-# Allow for partial initialization of LearningSearchIteration.
-LearningSearchIteration.__new__.__defaults__ = (None, None, None, None,
-                                                None, None, None, None,
-                                                None, None)
+def learning_search_iteration(current_cost_state_pair=None,
+                              next_cost_state_pairs=None,
+                              querying_condition=None, feedback_asked=None,
+                              feedback_given=None, feedback_generated=None,
+                              update_weights=None, weights=None, restart=None,
+                              stop=None):
+    if not feedback_generated:
+        feedback_generated = []
+
+    return LearningSearchIteration(current_cost_state_pair,
+                                   next_cost_state_pairs,
+                                   querying_condition, feedback_asked,
+                                   feedback_given, feedback_generated,
+                                   update_weights, weights, restart, stop)
 
 ##==============================================================================
 ## Definition of the abstract components of the learning search algorithm.
@@ -286,11 +305,13 @@ class FeedbackGenerationStep(FeedbackIterationStep):
                 iteration: LearningSearchIteration,
                 log: LearningSearchLog) -> LearningSearchIteration:
         if iteration.feedback_given:
+            all_feedback_generated = iteration.feedback_generated.copy()
             feedback_generated = self.generate_feedback(iteration, log)
             if feedback_generated:
+                all_feedback_generated += feedback_generated
                 print("Generated feedback: {}".format(
                     util.format_list(feedback_generated)))
-            return iteration.update(feedback_generated=feedback_generated)
+            return iteration.update(feedback_generated=all_feedback_generated)
         else:
             return iteration
 
@@ -454,11 +475,13 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
         # pprint.pprint(list(map(str, current_state.action_seq())))
 
         learning_log = self._learning_log.new_iteration()
-        next_cost_state_pairs = self.next_cost_state_pairs()
         restart = False
 
         for pipeline in self._pipelines:
-            iteration = LearningSearchIteration(
+
+            next_cost_state_pairs = self.next_cost_state_pairs()
+
+            iteration = learning_search_iteration(
                 current_cost_state_pair=(current_cost, current_state),
                 next_cost_state_pairs=next_cost_state_pairs)
 
@@ -527,8 +550,8 @@ class MultiBinaryFeedback(UserFeedbackInput):
     NO_FEEDBACK = None
 
     def __init__(self, points, labels):
-        self.points = points
-        self.labels = labels
+        self._points = points
+        self._labels = labels
 
     @classmethod
     def query(cls, points):
@@ -537,27 +560,30 @@ class MultiBinaryFeedback(UserFeedbackInput):
 
     @property
     def positive_points(self):
-        return [point for point, label in zip(self.points, self.labels)
+        return [point for point, label in zip(self._points, self._labels)
                       if label == MultiBinaryFeedback.POSITIVE_FEEDBACK]
 
     @property
     def negative_points(self):
-        return [point for point, label in zip(self.points, self.labels)
+        return [point for point, label in zip(self._points, self._labels)
                       if label == MultiBinaryFeedback.NEGATIVE_FEEDBACK]
 
     @property
     def not_sure_points(self):
-        return [point for point, label in zip(self.points, self.labels)
+        return [point for point, label in zip(self._points, self._labels)
                       if label == MultiBinaryFeedback.NOT_SURE_FEEDBACK]
 
     def map_features(self, features: ftr.Features):
         features_feedback = self.copy()
-        features_feedback.points = features.compute(self.points)
+        features_feedback._points = features.compute(self._points)
         return features_feedback
 
+    def points(self):
+        return self._points
+
     def copy(self):
-        return MultiBinaryFeedback(self.points.copy(),
-                                   self.labels.copy())
+        return MultiBinaryFeedback(self._points.copy(),
+                                   self._labels.copy())
 
 
 class MultiSelectFeedback(UserFeedbackInput):
@@ -571,12 +597,15 @@ class MultiSelectFeedback(UserFeedbackInput):
     """
 
     def __init__(self, preferred_points, other_points):
-        self.preferred = preferred_points
-        self.other = other_points
+        self.preferred = list(preferred_points)
+        self.other = list(other_points)
 
     @classmethod
     def query(cls, points):
-        return cls([], points)
+        return cls([], list(points))
+
+    def points(self):
+        return self.preferred + self.other
 
     def map_features(self, features: ftr.Features):
         feature_feedback = self.copy()
@@ -612,6 +641,15 @@ class NextNotMuchBetterThanCurrent(QueryingCondition,
                        self.next, self.next_score)
 
 
+class CurrentNodeHasSmallDepth(QueryingCondition,
+                               collections.namedtuple(
+                                   'CurrentNodeHasSmallDepth',
+                                   ['current', 'depth'])):
+    def __str__(self):
+        return "CurrentNodeHasSmallDepth(current={}, depth={})"\
+               .format(self.current, self.depth)
+
+
 class SmallAbsoluteGradientQueryingCondition(QueryingConditionStep):
 
     def __init__(self, gamma):
@@ -644,6 +682,22 @@ class NextNotMuchBetterThanCurrentQueryingCondition(QueryingConditionStep):
                 current_state, -current_cost, best_next_state, -best_next_cost)
         else:
             return None
+
+
+class CurrentNodeHasSmallDepthQueryingCondition(QueryingConditionStep):
+
+    def __init__(self, max_depth):
+        self.max_depth = max_depth
+
+    def querying_condition(self,
+                  iteration: LearningSearchIteration,
+                  log: LearningSearchLog):
+        _, current_state = iteration.current_cost_state_pair
+        depth = current_state.state().depth(current_state.action().node())
+        if depth <= self.max_depth:
+            return CurrentNodeHasSmallDepth(current_state, depth)
+        else:
+            return None
             
 
 ##------------------------------------------------------------------------------
@@ -661,6 +715,21 @@ class BinaryFeedbackOnNextNode(FeedbackTypeSelectionStep):
         return MultiBinaryFeedback.query([best_next_state])
 
 
+class BinaryFeedbackOnAllNextNodes(FeedbackTypeSelectionStep):
+
+    def feedback_required(self,
+                          iteration: LearningSearchIteration,
+                          log: LearningSearchLog) -> MultiBinaryFeedback:
+        """Returns the type of feedback that has to be asked, or None.
+
+        """
+        next_states = [state for cost, state in iteration.next_cost_state_pairs]
+        return MultiBinaryFeedback.query(next_states)
+
+
+# TODO: introduce the selection step that only queries for the sub-categories of the current node
+
+
 ##------------------------------------------------------------------------------
 ## Teachers
 
@@ -672,7 +741,7 @@ class BinaryFeedbackAlwaysPositiveTeacher(FeedbackCollectionStep):
     def get_feedback(self, query: MultiBinaryFeedback):
         assert isinstance(query, MultiBinaryFeedback)
         feedback = query.copy()
-        for index, state in enumerate(query.points):
+        for index, state in enumerate(query.points()):
             feedback.labels[index] = MultiBinaryFeedback.POSITIVE_FEEDBACK
         return feedback
 
@@ -687,9 +756,9 @@ class BinaryFeedbackStdInTeacher(FeedbackCollectionStep):
     def get_feedback(self, query: MultiBinaryFeedback):
         assert isinstance(query, MultiBinaryFeedback)
         feedback = query.copy()
-        for index, state in enumerate(query.points):
+        for index, state in enumerate(query.points()):
             label = self.get_label_for_state(state)
-            feedback.labels[index] = label
+            feedback._labels[index] = label
         return feedback
 
     def get_label_for_state(self, state):
@@ -789,21 +858,32 @@ class PreferenceFeedbackStdInTeacher(FeedbackCollectionStep):
 ##------------------------------------------------------------------------------
 ## Feedback generation from the user input
 
+
 class PreferenceWrtCurrentFeedbackGeneration(FeedbackGenerationStep):
     def generate_feedback(self, iteration: LearningSearchIteration,
                           log: LearningSearchLog) -> 'list[Feedback]':
         current_state = iteration.querying_condition.current
-        next_state = iteration.querying_condition.next
         feedback = iteration.feedback_given
         assert isinstance(feedback, MultiBinaryFeedback)
-        assert (len(feedback.positive_points) + len(feedback.negative_points)\
-                + len(feedback.not_sure_points)) == 1
-        if next_state in feedback.positive_points:
-            return [PreferenceFeedback(next_state, current_state)]
-        elif next_state in feedback.negative_points:
-            return [PreferenceFeedback(current_state, next_state)]
-        else:  # Not sure about the next state.
-            return None
+        result = []
+        for next_state in feedback.positive_points:
+            result.append(PreferenceFeedback(next_state, current_state))
+        for next_state in feedback.negative_points:
+            result.append(PreferenceFeedback(current_state, next_state))
+        return result if result else None
+
+
+class PairwisePreferenceFromBinaryFeedbackGeneration(FeedbackGenerationStep):
+    def generate_feedback(self, iteration: LearningSearchIteration,
+                          log: LearningSearchLog) -> 'list[Feedback]':
+        current_state = iteration.querying_condition.current
+        feedback = iteration.feedback_given
+        assert isinstance(feedback, MultiBinaryFeedback)
+        result = []
+        for pos_state in feedback.positive_points:
+            for neg_state in feedback.negative_points:
+                result.append(PreferenceFeedback(pos_state, neg_state))
+        return result if result else None
 
 ##------------------------------------------------------------------------------
 ## Update conditions

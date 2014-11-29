@@ -450,7 +450,7 @@ def run_selection_procedure(max_nodes):
         # # weight for the bias feature
         # weight_vector += [1]
 
-        pipeline = lsearch.LearningSearchPipeline(
+        main_pipeline = lsearch.LearningSearchPipeline(
             (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(1),
              lsearch.BinaryFeedbackOnNextNode(),
              lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
@@ -462,8 +462,22 @@ def run_selection_procedure(max_nodes):
              # lsearch.NeverRestartOnFeedbackCondition(),
              lsearch.NeverStopCondition()))
 
+        top_level_pipeline = lsearch.LearningSearchPipeline(
+            (lsearch.CurrentNodeHasSmallDepthQueryingCondition(1),
+             lsearch.BinaryFeedbackOnAllNextNodes(),
+             lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+             lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
+             lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
+             lsearch.PassiveAggressivePreferenceLearner(weight_vector, features, 1),
+             # lsearch.PerceptronPreferenceLearner(weight_vector, features),
+             lsearch.AlwaysRestartOnFeedbackCondition(),
+             # lsearch.NeverRestartOnFeedbackCondition(),
+             lsearch.NeverStopCondition()))
+
         learning_algo = lsearch.LearningSearch(
-                s0, state_space, planner, features, weight_vector, [pipeline])
+                s0, state_space, planner, features, weight_vector,
+                [top_level_pipeline, main_pipeline])
 
         data = topics.default_data()
         accuracies = []
