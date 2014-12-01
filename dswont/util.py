@@ -286,3 +286,24 @@ class DefaultOrderedDict(collections.OrderedDict):
         return 'OrderedDefaultDict({}, {})'\
                .format(self.default_factory,
                        collections.OrderedDict.__repr__(self))
+
+    def take_while(self, predicate):
+        return DefaultOrderedDict(
+            self.default_factory,
+            itertools.takewhile(predicate, self.items()))
+
+    @property
+    def last_key(self):
+        return next(reversed(self))
+
+    @property
+    def last_item(self):
+        key = self.last_key
+        return key, self[key]
+
+    @property
+    def last_value(self):
+        return self.last_item[1]
+        
+    
+        

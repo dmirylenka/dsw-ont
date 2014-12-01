@@ -137,7 +137,7 @@ class LazyState(SearchState):
         return self._state
 
     def __str__(self):
-        return "LazyState({}, {})".format(
+        return "L{}{}".format(
             str(self._previous.state()),
             str(self._action))
 

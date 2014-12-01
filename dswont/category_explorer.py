@@ -395,7 +395,8 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache,
 
 def run_selection_procedure(max_nodes):
     with wiki.CategoryRelationCache() as rel:
-        root = 'Software'
+        # root = 'Software'
+        root = 'Computer science'
         start_state = CategoryGraphState.initial_state(root)
 
         state_space = CategoryGraphStateSpace(rel)
@@ -431,7 +432,8 @@ def run_selection_procedure(max_nodes):
                                 leaves_ftr,
                                 parent_similarity_ftr,
                                 # graph_size_ftr
-        )
+                               )
+                               # # Exclude the product features for the moment.
                                #.add_products()
                                # # With preference updates, bias is never used.
                                #.add_bias()
@@ -450,34 +452,52 @@ def run_selection_procedure(max_nodes):
         # # weight for the bias feature
         # weight_vector += [1]
 
+        feedback_cache = lsearch.FeedbackCache()
+        learner = lsearch.PassiveAggressivePreferenceLearner(weight_vector,
+                                                             features, 1)
+
         main_pipeline = lsearch.LearningSearchPipeline(
             (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(1),
              lsearch.BinaryFeedbackOnNextNode(),
-             lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+             lsearch.MemoizingFeedbackCollection(
+                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+                 feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
-             lsearch.PassiveAggressivePreferenceLearner(weight_vector, features, 1),
-             # lsearch.PerceptronPreferenceLearner(weight_vector, features),
-             lsearch.AlwaysRestartOnFeedbackCondition(),
-             # lsearch.NeverRestartOnFeedbackCondition(),
+             learner,
+             lsearch.AlwaysRestartOnWeightUpdateCondition(),
              lsearch.NeverStopCondition()))
 
         top_level_pipeline = lsearch.LearningSearchPipeline(
-            (lsearch.CurrentNodeHasSmallDepthQueryingCondition(1),
+            (lsearch.CurrentNodeHasSmallDepthQueryingCondition(0),
              lsearch.BinaryFeedbackOnAllNextNodes(),
-             lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+             lsearch.MemoizingFeedbackCollection(
+                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+                 feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
              lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
-             lsearch.PassiveAggressivePreferenceLearner(weight_vector, features, 1),
-             # lsearch.PerceptronPreferenceLearner(weight_vector, features),
-             lsearch.AlwaysRestartOnFeedbackCondition(),
-             # lsearch.NeverRestartOnFeedbackCondition(),
+             learner,
+             lsearch.AlwaysRestartOnWeightUpdateCondition(),
              lsearch.NeverStopCondition()))
+        
+        periodic_feedback_pipeline = lsearch.LearningSearchPipeline(
+            (lsearch.TooLongWithoutFeedbackQueryingCondition(100),
+             lsearch.BinaryFeedbackOnNextNode(),
+             lsearch.MemoizingFeedbackCollection(
+                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+                 feedback_cache),
+             lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
+             lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
+             learner,
+             lsearch.AlwaysRestartOnWeightUpdateCondition(),
+             lsearch.NeverStopCondition()))
+
 
         learning_algo = lsearch.LearningSearch(
                 s0, state_space, planner, features, weight_vector,
-                [top_level_pipeline, main_pipeline])
+                [top_level_pipeline, main_pipeline, periodic_feedback_pipeline])
 
         data = topics.default_data()
         accuracies = []

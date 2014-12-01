@@ -30,7 +30,7 @@ from dswont import util
 ##==============================================================================
 
 class Feedback(metaclass=abc.ABCMeta):
-    """'Marker interface' for feedback that the can be given to the algorithm.
+    """'Marker interface' for feedback that can be given to the algorithm.
 
     """
 
@@ -70,16 +70,15 @@ class LearningSearchLog(object):
 
     """
 
-    def __init__(self, iteration=0, restarts=None, feedback=None, weights=None):
-        if not restarts:
-            restarts = []
-        self._iteration = iteration
-        self._restarts = restarts
-        self._feedback = feedback or util.DefaultOrderedDict(list)
-        self._weights = weights or util.DefaultOrderedDict(list)
+    def __init__(self, initial_weights):
+        self._iteration = 0
+        self._restarts  = []
+        self._feedback  = util.DefaultOrderedDict(list)
+        self._weights   = util.DefaultOrderedDict(list)
+        self._weights[-1].append(initial_weights)
 
     def snapshot(self):
-        return LearningSearchLogSnapshot(self, self.iteration)
+        return LearningSearchLogSnapshot(self, self._iteration)
 
     @property
     def iteration(self) -> int:
@@ -96,6 +95,10 @@ class LearningSearchLog(object):
     @property
     def weights(self):
         return self._weights
+
+    @property
+    def last_weights(self):
+        return self.weights.last_value[-1]
 
     def new_iteration(self):
         old_state = self.snapshot()
@@ -126,6 +129,11 @@ class LearningSearchLog(object):
         return self.iteration - last_restart
 
     @property
+    def moves_since_feedback(self):
+        last_feedback = self.feedback.last_key if self.feedback else 0
+        return self.iteration - last_feedback
+
+    @property
     def n_feedback(self):
         return len(self.feedback)
 
@@ -142,7 +150,7 @@ class LearningSearchLogSnapshot(LearningSearchLog):
         self._iteration = iteration
 
     def valid_iter(self, iteration):
-        return iteration < self._iteration
+        return iteration <= self._iteration
 
     @property
     def iteration(self) -> int:
@@ -154,15 +162,20 @@ class LearningSearchLogSnapshot(LearningSearchLog):
 
     @property
     def feedback(self):
-        return collections.OrderedDict(
-            itertools.takewhile(lambda item: self.valid_iter(item[0]),
-                                self._log.feedback.items()))
+        # return util.DefaultOrderedDict(
+        #     itertools.takewhile(lambda item: self.valid_iter(item[0]),
+        #                         self._log.feedback.items()))
+        return self._log.feedback.take_while(
+            lambda item: self.valid_iter(item[0]))
 
     @property
     def weights(self):
-        return collections.OrderedDict(
-            itertools.takewhile(lambda item: self.valid_iter(item[0]),
-                                self._log.weights.items()))
+        # return util.DefaultOrderedDict(
+        #     itertools.takewhile(lambda item: self.valid_iter(item[0]),
+        #                         self._log.weights.items()))
+        return self._log.weights.take_while(
+            lambda item: self.valid_iter(item[0]))
+
 
     def snapshot(self, iteration):
         return LearningSearchLogSnapshot(self._log, iteration)
@@ -284,7 +297,6 @@ class FeedbackCollectionStep(FeedbackIterationStep, Teacher):
                 log: LearningSearchLog) -> LearningSearchIteration:
         if iteration.feedback_asked:
             # TODO: check if copying the feedback object is really needed here.
-            print("Iteration {} since restart" .format(log.moves_since_restart))
             feedback_given = self.get_feedback(iteration.feedback_asked.copy())
             return iteration.update(feedback_given=feedback_given)
         else:
@@ -364,7 +376,7 @@ class WeightUpdateStep(FeedbackIterationStep, Learner):
                           util.format_nums(new_weights -
                                            old_weights, 10),
                           util.format_nums(new_weights, 5)))
-            print("Iteration {} since restart, update of norm {}"
+            print("Update of norm {}"
                   .format(log.moves_since_restart,
                           np.linalg.norm(new_weights-old_weights)))
             return iteration.update(weights=new_weights)
@@ -415,15 +427,6 @@ class StopConditionStep(metaclass=abc.ABCMeta):
 ## Definition of the learning search algorithm itself.
 ##==============================================================================
 
-class LearningSearchPipeline(list, FeedbackIterationStep):
-    def process(self,
-                iteration: LearningSearchIteration,
-                log: LearningSearchLog) -> LearningSearchIteration:
-        for step in self:
-            iteration = step.process(iteration, log)
-        return iteration
-
-
 class LearningSearch(search.FeatureBasedHeuristicSearch):
     """A search algorithm that learns from the feedback.
 
@@ -439,7 +442,7 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
         goal_test = lambda state: False
         super().__init__(start, space, planner, goal_test, features,
                          initial_weight_vector, **params)
-        self._learning_log = LearningSearchLog()
+        self._learning_log = LearningSearchLog(initial_weight_vector)
         self._pipelines = iteration_pipelines
         super().step()
 
@@ -469,6 +472,9 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
 
 
     def step(self) -> (float, sspace.SearchState):
+
+        # print("\n### NEW STEP ###\n")
+
         current_cost, current_state = self._planner.peek()
         
         # print("Current state:")
@@ -476,6 +482,7 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
 
         learning_log = self._learning_log.new_iteration()
         restart = False
+        first_pipeline = True
 
         for pipeline in self._pipelines:
 
@@ -485,8 +492,9 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
                 current_cost_state_pair=(current_cost, current_state),
                 next_cost_state_pairs=next_cost_state_pairs)
 
-            self.report_iteration(iteration,
-                                  learning_log)
+            if first_pipeline:
+                self.report_iteration(iteration, learning_log)
+                first_pipeline = False
 
             iteration = pipeline.process(iteration, learning_log)
         
@@ -497,15 +505,58 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
                 self.weight_vector = iteration.weights
                 self._learning_log.record_update(iteration.weights)
             
-            restart = restart and iteration.restart
+            restart = restart or iteration.restart
 
         if restart:
-            print("\n!!! RESTART CONDITION !!!\n")
-            self.restart([self._start])
+            print("\n!!! RESTART !!!\n")
             self._learning_log.record_restart()
+            self.restart([self._start])
+
 
         super().step()
         return current_cost, current_state
+
+
+##==============================================================================
+## Definition of some useful intermediate-level abstractions.
+##==============================================================================
+
+class FeedbackCollectionStepWrapper(FeedbackIterationStep):
+
+    def __init__(self, delegate: FeedbackIterationStep):
+        self.delegate = delegate
+
+    def process(self,
+                iteration: LearningSearchIteration,
+                log: LearningSearchLog) -> LearningSearchIteration:
+        iteration = self.before(iteration, log)
+        iteration = self.instead(iteration, log)
+        iteration = self.after(iteration, log)
+        return iteration
+
+    @abc.abstractmethod
+    def before(self,
+               iteration: LearningSearchIteration,
+               log: LearningSearchLog) -> LearningSearchIteration:
+        return iteration
+
+    def instead(self, iteration, log):
+        return self.delegate.process(iteration, log)
+
+    @abc.abstractmethod
+    def after(self,
+              iteration: LearningSearchIteration,
+              log: LearningSearchLog) -> LearningSearchIteration:
+        return iteration
+        
+
+class LearningSearchPipeline(list, FeedbackIterationStep):
+    def process(self,
+                iteration: LearningSearchIteration,
+                log: LearningSearchLog) -> LearningSearchIteration:
+        for step in self:
+            iteration = step.process(iteration, log)
+        return iteration
 
 
 ##==============================================================================
@@ -533,8 +584,8 @@ class PreferenceFeedback(Feedback,
                              other=features.compute_one(self.other))
 
     def __str__(self):
-        return "PreferenceFeedback({}>{})".format(str(self.preferred),
-                                                  str(self.other))
+        return "({} > {})".format(str(self.preferred),
+                                  str(self.other))
 
 ##------------------------------------------------------------------------------
 ## User feedback input types
@@ -580,6 +631,10 @@ class MultiBinaryFeedback(UserFeedbackInput):
 
     def points(self):
         return self._points
+
+    @property
+    def labels(self):
+        return self._labels
 
     def copy(self):
         return MultiBinaryFeedback(self._points.copy(),
@@ -650,6 +705,17 @@ class CurrentNodeHasSmallDepth(QueryingCondition,
                .format(self.current, self.depth)
 
 
+class TooLongWithoutFeedback(QueryingCondition,
+                             collections.namedtuple(
+                                 'CurrentNodeHasSmallDepth',
+                                 ['current', 'next',
+                                  'steps_without_feedback'])):
+    def __str__(self):
+        return "TooLongWithoutFeedback(current={}, next={}, "\
+               "steps_without_feedback={})"\
+               .format(self.current, self.next, self.steps_without_feedback)
+
+
 class SmallAbsoluteGradientQueryingCondition(QueryingConditionStep):
 
     def __init__(self, gamma):
@@ -688,16 +754,37 @@ class CurrentNodeHasSmallDepthQueryingCondition(QueryingConditionStep):
 
     def __init__(self, max_depth):
         self.max_depth = max_depth
+        self.states_seen = set()
 
     def querying_condition(self,
                   iteration: LearningSearchIteration,
                   log: LearningSearchLog):
         _, current_state = iteration.current_cost_state_pair
         depth = current_state.state().depth(current_state.action().node())
-        if depth <= self.max_depth:
+        if depth <= self.max_depth and current_state not in self.states_seen:
+            self.states_seen.add(current_state)
             return CurrentNodeHasSmallDepth(current_state, depth)
         else:
             return None
+
+
+class TooLongWithoutFeedbackQueryingCondition(QueryingConditionStep):
+
+    def __init__(self, steps_without_feedback):
+        self.steps_without_feedback = steps_without_feedback
+
+    def querying_condition(self,
+                  iteration: LearningSearchIteration,
+                  log: LearningSearchLog):
+        _, current_state = iteration.current_cost_state_pair
+        depth = current_state.state().depth(current_state.action().node())
+        if log.moves_since_feedback >= self.steps_without_feedback:
+            _, next_state = iteration.next_cost_state_pairs[0]
+            return TooLongWithoutFeedback(current_state, next_state,
+                                          log.moves_since_feedback)
+        else:
+            return None
+
             
 
 ##------------------------------------------------------------------------------
@@ -733,6 +820,79 @@ class BinaryFeedbackOnAllNextNodes(FeedbackTypeSelectionStep):
 ##------------------------------------------------------------------------------
 ## Teachers
 
+class FeedbackCache():
+
+    def __init__(self):
+        self.node_labels = {}
+
+    def restore_memoized_labels(self, feedback):
+        updated_feedback = feedback.copy()
+        if isinstance(updated_feedback, MultiBinaryFeedback):
+            for index, state in enumerate(updated_feedback.points()):
+                node = state.action().node()
+                if node in self.node_labels:
+                    print("Got the label from cache: {} : {}"
+                          .format(node, self.node_labels[node]))
+                    updated_feedback.labels[index] = self.node_labels[node]
+        elif isinstance(updated_feedback, MultiSelectFeedback):
+            for state in updated_feedback.other:
+                node = state.action().node()
+                if node in self.node_labels:
+                    label = self.node_labels[node]
+                    if label == MultiBinaryFeedback.POSITIVE:
+                        updated_feedback.positive_points.append(node)
+                    elif label == MultiBinaryFeedback.NEGATIVE:
+                        updated_feedback.negative_points.append(node)
+                    elif label == MultiBinaryFeedback.NOT_SURE_FEEDBACK:
+                        updated_feedback.not_sure_points.append(node)
+                    else:
+                        raise AssertionError("Shouldn't happen")
+        else:
+            raise TypeError("Unknown feedback type: {}".format(type(feedback)))
+        return updated_feedback
+
+    def memoize_labels(self, feedback):
+        if isinstance(feedback, MultiBinaryFeedback):
+            for state, label in zip(feedback.points(), feedback.labels):
+                node = state.action().node()
+                if label != MultiBinaryFeedback.NO_FEEDBACK:
+                    self.node_labels[node] = label
+        elif isinstance(feedback, MultiSelectFeedback):
+            for state in feedback.preferred:
+                node = state.action().node()
+                self.node_labels[node] = MultiBinaryFeedback.POSITIVE
+        else:
+            raise TypeError("Unknown feedback type: {}".format(type(feedback)))
+        return feedback
+
+
+class MemoizingFeedbackCollection(FeedbackCollectionStepWrapper):
+
+    def __init__(self, delegate: FeedbackCollectionStep,
+                 feedback_cache: FeedbackCache):
+        super().__init__(delegate)
+        self.cache = feedback_cache
+            
+    def before(self,
+               iteration: LearningSearchIteration,
+               log: LearningSearchLog) -> LearningSearchIteration:
+        if iteration.feedback_asked:
+            updated_feedback = self.cache.restore_memoized_labels(
+                iteration.feedback_asked)
+            return iteration.update(feedback_asked=updated_feedback)
+        else:
+            return iteration
+
+    def instead(self, iteration, log):
+        return self.delegate.process(iteration, log)
+
+    def after(self,
+              iteration: LearningSearchIteration,
+              log: LearningSearchLog) -> LearningSearchIteration:
+        if iteration.feedback_given:
+            self.cache.memoize_labels(iteration.feedback_given)
+        return iteration
+
 class BinaryFeedbackAlwaysPositiveTeacher(FeedbackCollectionStep):
     """Dumb teacher for binary feedback that marks all given nodes as positive.
     
@@ -757,8 +917,9 @@ class BinaryFeedbackStdInTeacher(FeedbackCollectionStep):
         assert isinstance(query, MultiBinaryFeedback)
         feedback = query.copy()
         for index, state in enumerate(query.points()):
-            label = self.get_label_for_state(state)
-            feedback._labels[index] = label
+            if feedback._labels[index] == MultiBinaryFeedback.NO_FEEDBACK:
+                label = self.get_label_for_state(state)
+                feedback._labels[index] = label
         return feedback
 
     def get_label_for_state(self, state):
@@ -854,7 +1015,6 @@ class PreferenceFeedbackStdInTeacher(FeedbackCollectionStep):
                     "Please press a digit in {}, 'u', 'a', 'n' or 'q'."
                     .format(answer, indices))
 
-
 ##------------------------------------------------------------------------------
 ## Feedback generation from the user input
 
@@ -901,20 +1061,21 @@ class AlwaysUpdateWeightsOnFeedbackCondition(WeightUpdateConditionStep):
 class PassiveAggressivePreferenceLearner(WeightUpdateStep):
 
     def __init__(self, initial_weights, features, gamma=0):
-        self.weights = initial_weights
+        self._weights = initial_weights
         self.gamma = float(gamma)
         self.features = features
 
     def get_weights(self):
-        return self.weights
+        return self._weights.copy()
 
     def update_weights(self, feedback: 'list[PreferenceFeedback]'):
         for preference in feedback:
             feature_preference = preference.map_features(self.features)
             preferred = feature_preference.preferred
             other = feature_preference.other
-            increment = self.compute_increment(self.weights, preferred, other)
-            self.weights += increment
+            increment = self.compute_increment(self._weights, preferred, other)
+            print("Weights increment: {}".format(util.format_nums(increment, 4)))
+            self._weights += increment
 
     def _loss(self, w, diff):
         epsilon = 1e-6  # To ensure the margin despite small numeric errors.
@@ -923,9 +1084,10 @@ class PassiveAggressivePreferenceLearner(WeightUpdateStep):
     def compute_increment(self, weight_vector, preferred, other):
         result = np.zeros_like(weight_vector, float)
         diff = preferred - other
-        # print("Diff: {}".format(diff))
+        print("Current W: {}".format(weight_vector))
+        print("Diff: {}".format(diff))
         loss = self._loss(weight_vector, diff)
-        # print("Loss: {}".format(loss))
+        print("Loss: {}".format(loss))
         if loss > 0:
             norm_squared = np.linalg.norm(diff) ** 2
             if norm_squared != 0:
@@ -936,19 +1098,20 @@ class PassiveAggressivePreferenceLearner(WeightUpdateStep):
 class PerceptronPreferenceLearner(WeightUpdateStep):
 
     def __init__(self, initial_weights, features):
-        self.weights = initial_weights
+        self._weights = initial_weights
         self.features = features
 
     def get_weights(self):
-        return self.weights
+        return self._weights.copy()
 
     def update_weights(self, feedback: 'list[PreferenceFeedback]'):
         for preference in feedback:
             feature_preference = preference.map_features(self.features)
             preferred = feature_preference.preferred
             other = feature_preference.other
-            increment = self.compute_increment(self.weights, preferred, other)
-            self.weights += increment
+            increment = self.compute_increment(self._weights, preferred, other)
+            print("Weights increment: {}".format(util.format_nums(increment, 4)))
+            self._weights += increment
 
     def _loss(self, w, diff):
         return max(0, np.dot(w, diff))
@@ -959,13 +1122,22 @@ class PerceptronPreferenceLearner(WeightUpdateStep):
 ##------------------------------------------------------------------------------
 ## Restart condition
 
-class AlwaysRestartOnFeedbackCondition(RestartConditionStep):
+class AlwaysRestartOnWeightUpdateCondition(RestartConditionStep):
     def should_restart(self,
                        iteration: LearningSearchIteration,
                        log: LearningSearchLog) -> bool:
-        return True
+        last_weights = log.last_weights
+        possibly_changed_weights = iteration.weights
+        print("Last weights: {}".format(util.format_nums(last_weights, 4)))
+        if possibly_changed_weights is not None:
+            print("Current weights: {}"
+                  .format(util.format_nums(possibly_changed_weights, 4)))
+            print("Close: {}"
+                  .format(np.allclose(last_weights, possibly_changed_weights)))
+        return (possibly_changed_weights is not None) and\
+               not np.allclose(last_weights, possibly_changed_weights)
 
-class NeverRestartOnFeedbackCondition(RestartConditionStep):
+class NeverRestartOnWeightUpdateCondition(RestartConditionStep):
     def should_restart(self,
                        iteration: LearningSearchIteration,
                        log: LearningSearchLog) -> bool:
