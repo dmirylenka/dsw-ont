@@ -205,13 +205,6 @@ class CategoryGraphStateSpace(sspace.StateSpace):
 
 def relevant_links_incremental_fn(rel: wiki.CategoryRelationCache,
                                            normalized=True):
-    """Computes corrected average number of links between the explored nodes.
-    
-    The precise value is (nlinks + 1) / nnodes.
-    The value is computed incrementally based on the additional links.
-    
-    """
-
     def relevant_links_incremental(action: AddNodeAction,
                                    prev_sstate: sspace.SearchState,
                                    prev_value):
@@ -453,8 +446,11 @@ def run_selection_procedure(max_nodes):
         # weight_vector += [1]
 
         feedback_cache = lsearch.FeedbackCache()
-        learner = lsearch.PassiveAggressivePreferenceLearner(weight_vector,
-                                                             features, 1)
+        seen_feedback_filter = lsearch.OnlyAllowAGeneratedFeedbackPointOnce()
+        # learner = lsearch.PassiveAggressivePreferenceLearner(weight_vector,
+        #                                                      features, 1)
+        learner = lsearch.SvmBasedPreferenceLearner(weight_vector, features)
+
 
         main_pipeline = lsearch.LearningSearchPipeline(
             (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(1),
@@ -463,6 +459,7 @@ def run_selection_procedure(max_nodes):
                  lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
                  feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             seen_feedback_filter,
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
              learner,
              lsearch.AlwaysRestartOnWeightUpdateCondition(),
@@ -475,7 +472,8 @@ def run_selection_procedure(max_nodes):
                  lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
                  feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
-             lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
+             # lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
+             seen_feedback_filter,
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
              learner,
              lsearch.AlwaysRestartOnWeightUpdateCondition(),
@@ -488,6 +486,7 @@ def run_selection_procedure(max_nodes):
                  lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
                  feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             seen_feedback_filter,
              lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
              learner,
