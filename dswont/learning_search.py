@@ -18,6 +18,7 @@ import itertools
 import numpy as np
 import operator
 import pprint
+import sklearn
 
 from dswont import features as ftr
 from dswont import search
@@ -377,8 +378,7 @@ class WeightUpdateStep(FeedbackIterationStep, Learner):
                                            old_weights, 10),
                           util.format_nums(new_weights, 5)))
             print("Update of norm {}"
-                  .format(log.moves_since_restart,
-                          np.linalg.norm(new_weights-old_weights)))
+                  .format(np.linalg.norm(new_weights-old_weights)))
             return iteration.update(weights=new_weights)
         else:
             return iteration
@@ -575,6 +575,17 @@ class BinaryFeedback(Feedback,
     def map_features(self, features):
         return self._replace(item=features.compute_one(self.item))
 
+    def __hash__(self):
+        return operator.xor(hash(self.item), hash(self.label))
+
+    def __eq__(self, other):
+        if self is other:
+            return True
+        elif not isinstance(other, BinaryFeedback):
+            return False
+        else:
+            return self.item == other.item and self.label == other.label
+
 
 class PreferenceFeedback(Feedback,
                          collections.namedtuple('PreferenceFeedback',
@@ -586,6 +597,19 @@ class PreferenceFeedback(Feedback,
     def __str__(self):
         return "({} > {})".format(str(self.preferred),
                                   str(self.other))
+
+    def __hash__(self):
+        return operator.xor(hash(self.preferred), hash(self.other))
+
+    def __eq__(self, other):
+        if self is other:
+            return True
+        elif not isinstance(other, PreferenceFeedback):
+            return False
+        else:
+            return self.preferred == other.preferred and\
+                   self.other == other.other
+    
 
 ##------------------------------------------------------------------------------
 ## User feedback input types
@@ -814,7 +838,7 @@ class BinaryFeedbackOnAllNextNodes(FeedbackTypeSelectionStep):
         return MultiBinaryFeedback.query(next_states)
 
 
-# TODO: introduce the selection step that only queries for the sub-categories of the current node
+# TODO: introduce the selection step that only queries for the sub-categories of the current node?
 
 
 ##------------------------------------------------------------------------------
@@ -1045,6 +1069,25 @@ class PairwisePreferenceFromBinaryFeedbackGeneration(FeedbackGenerationStep):
                 result.append(PreferenceFeedback(pos_state, neg_state))
         return result if result else None
 
+
+class OnlyAllowAGeneratedFeedbackPointOnce(FeedbackIterationStep):
+
+    def __init__(self):
+        self.feedback_seen = set()
+
+    def process(self,
+                iteration: LearningSearchIteration,
+                log: LearningSearchLog) -> LearningSearchIteration:
+        new_feedback = []
+        for feedback in iteration.feedback_generated:
+            if feedback in self.feedback_seen:
+                print("!!!!! Already seen feedback {}".format(feedback))
+            else:
+                new_feedback.append(feedback)
+        self.feedback_seen.update(new_feedback)
+        return iteration.update(feedback_generated=new_feedback)
+
+
 ##------------------------------------------------------------------------------
 ## Update conditions
 
@@ -1060,7 +1103,7 @@ class AlwaysUpdateWeightsOnFeedbackCondition(WeightUpdateConditionStep):
 
 class PassiveAggressivePreferenceLearner(WeightUpdateStep):
 
-    def __init__(self, initial_weights, features, gamma=0):
+    def __init__(self, initial_weights, features: ftr.Features, gamma=0):
         self._weights = initial_weights
         self.gamma = float(gamma)
         self.features = features
@@ -1097,7 +1140,7 @@ class PassiveAggressivePreferenceLearner(WeightUpdateStep):
 
 class PerceptronPreferenceLearner(WeightUpdateStep):
 
-    def __init__(self, initial_weights, features):
+    def __init__(self, initial_weights, features: ftr.Features):
         self._weights = initial_weights
         self.features = features
 
@@ -1118,6 +1161,34 @@ class PerceptronPreferenceLearner(WeightUpdateStep):
 
     def compute_increment(self, weight_vector, preferred, other):
         return preferred - other
+
+
+class SvmBasedPreferenceLearner(WeightUpdateStep):
+
+    def __init__(self, initial_weights, features):
+        self._weights = initial_weights
+        self.features = features
+        self.classifier = sklearn.svm.SVC(C=10.0, kernel='linear')
+        self.data = []
+
+    def get_weights(self):
+        if hasattr(self.classifier, 'coef_'):
+            # print("Weights: {}".format(
+            #     np.array(*self.classifier.coef_, dtype=float)))
+            return np.array(*self.classifier.coef_, dtype=float)
+        else:
+            return self._weights.copy()
+
+    def update_weights(self, feedback: 'list[PreferenceFeedback]'):
+        for preference in feedback:
+            feature_preference = preference.map_features(self.features)
+            preferred = feature_preference.preferred
+            other = feature_preference.other
+            diff = preferred - other
+            print("Diff: {}".format(util.format_nums(diff, 4)))
+            self.data.extend([(diff, 1), (-diff, -1)])
+        X, y = zip(*self.data)
+        self.classifier.fit(X, y)
 
 ##------------------------------------------------------------------------------
 ## Restart condition
