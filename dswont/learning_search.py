@@ -143,7 +143,7 @@ class LearningSearchLog(object):
     @property
     def moves_since_restart(self):
         last_restart = self.restarts[-1] if self.restarts else 0
-        return self.iteration - last_restart
+        return self.iteration - last_restart - 1
 
     @property
     def moves_since_feedback(self):
@@ -153,6 +153,18 @@ class LearningSearchLog(object):
     @property
     def n_updates(self):
         return len(self.weights)
+
+    @property
+    def max_iterations_without_restart(self):
+        restarts = self.restarts
+        moves_since_restart = self.moves_since_restart
+        if len(restarts) > 1:
+            return max(max(map(operator.sub, restarts[1:], restarts[:-1])) - 1,
+                       moves_since_restart)
+        elif len(restarts) == 1:
+            return max(restarts[-1] - 1, moves_since_restart)
+        else:  # No restarts.
+            return self.iteration - 1
 
 
 class LearningSearchLogSnapshot(LearningSearchLog):
@@ -842,8 +854,9 @@ class TooLongWithoutFeedbackQueryingCondition(QueryingConditionStep):
                   iteration: LearningSearchIteration,
                   log: LearningSearchLog):
         _, current_state = iteration.current_cost_state_pair
-        depth = current_state.state().depth(current_state.action().node())
-        if log.moves_since_feedback >= self.steps_without_feedback:
+        recent_feedback = log.moves_since_feedback < self.steps_without_feedback
+        graph_too_large = log.moves_since_restart == log.max_iterations_without_restart
+        if not recent_feedback and graph_too_large:
             _, next_state = iteration.next_cost_state_pairs[0]
             return TooLongWithoutFeedback(current_state, next_state,
                                           log.moves_since_feedback)

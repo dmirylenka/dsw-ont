@@ -492,7 +492,7 @@ def run_selection_procedure(max_nodes):
                 parents = [p for p in rel.parents(node_path[-1])
                            if state.is_explored(p)]
                 current_node = parents[0] if parents else None
-            return '->'.join(reversed(node_path))
+            return ' -> '.join(reversed(node_path))
 
         # Weights for the ordinary features.
         # weight_vector = [-1, 1, -1, 1, 1]

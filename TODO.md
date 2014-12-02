@@ -1,5 +1,4 @@
 ### Next
-* make too-long-without-feedback start counting only if the graph has grown bigger than previously
 * introduce monitoring/stopping based on the performance on the nodes visited so far
 * implement the stopping criterion
 * figure out the interplay between C and gamma
@@ -12,6 +11,7 @@
 * implement space- and time-efficient storing of the category states
 
 ### Done
+* make too-long-without-feedback start counting only if the graph has grown bigger than previously
 * present the query node with the path to the root
 * distinguish automatic feedback points from user-input ones
 * restart if too_long_without_feedback only if we had negative feedback
