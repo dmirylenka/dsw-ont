@@ -489,8 +489,10 @@ def run_selection_procedure(max_nodes):
              seen_feedback_filter,
              lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
+             # lsearch.NextNotMuchBetterThanCurrentUpdateCondition(1),
              learner,
-             lsearch.AlwaysRestartOnWeightUpdateCondition(),
+             # lsearch.AlwaysRestartOnWeightUpdateCondition(),
+             lsearch.RestartOnNegativeFeedbackCondition(),
              lsearch.NeverStopCondition()))
 
 

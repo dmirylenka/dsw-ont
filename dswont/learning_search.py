@@ -763,16 +763,18 @@ class NextNotMuchBetterThanCurrentQueryingCondition(QueryingConditionStep):
         self.gamma = gamma
 
     def querying_condition(self,
-                  iteration: LearningSearchIteration,
-                  log: LearningSearchLog):
+                           iteration: LearningSearchIteration,
+                           log: LearningSearchLog):
         current_cost, current_state = iteration.current_cost_state_pair
         best_next_cost, best_next_state = iteration.next_cost_state_pairs[0]
+        print("Current score: {}, next score: {}"
+              .format(-current_cost, -best_next_cost))
         if -best_next_cost + current_cost < self.gamma:
             return NextNotMuchBetterThanCurrent(
                 current_state, -current_cost, best_next_state, -best_next_cost)
         else:
             return None
-
+        
 
 class CurrentNodeHasSmallDepthQueryingCondition(QueryingConditionStep):
 
@@ -808,7 +810,6 @@ class TooLongWithoutFeedbackQueryingCondition(QueryingConditionStep):
                                           log.moves_since_feedback)
         else:
             return None
-
             
 
 ##------------------------------------------------------------------------------
@@ -836,9 +837,6 @@ class BinaryFeedbackOnAllNextNodes(FeedbackTypeSelectionStep):
         """
         next_states = [state for cost, state in iteration.next_cost_state_pairs]
         return MultiBinaryFeedback.query(next_states)
-
-
-# TODO: introduce the selection step that only queries for the sub-categories of the current node?
 
 
 ##------------------------------------------------------------------------------
@@ -916,6 +914,7 @@ class MemoizingFeedbackCollection(FeedbackCollectionStepWrapper):
         if iteration.feedback_given:
             self.cache.memoize_labels(iteration.feedback_given)
         return iteration
+
 
 class BinaryFeedbackAlwaysPositiveTeacher(FeedbackCollectionStep):
     """Dumb teacher for binary feedback that marks all given nodes as positive.
@@ -1039,9 +1038,9 @@ class PreferenceFeedbackStdInTeacher(FeedbackCollectionStep):
                     "Please press a digit in {}, 'u', 'a', 'n' or 'q'."
                     .format(answer, indices))
 
+
 ##------------------------------------------------------------------------------
 ## Feedback generation from the user input
-
 
 class PreferenceWrtCurrentFeedbackGeneration(FeedbackGenerationStep):
     def generate_feedback(self, iteration: LearningSearchIteration,
@@ -1096,6 +1095,29 @@ class AlwaysUpdateWeightsOnFeedbackCondition(WeightUpdateConditionStep):
                               iteration: LearningSearchIteration,
                               log: LearningSearchLog) -> bool:
         return True
+
+
+class NegativeFeedbackConditionMixin(object):
+    def negative_feedback(self,
+                  iteration: LearningSearchIteration,
+                  log: LearningSearchLog) -> bool:
+        if not iteration.feedback_asked:
+            return False
+        assert len(iteration.feedback_asked.points()) == 1
+        next_state = iteration.feedback_asked.points()[0]
+        feedback = iteration.feedback_given
+        if not feedback or not isinstance(feedback, MultiBinaryFeedback):
+            return False
+        else:
+            return next_state in feedback.negative_points
+
+
+class UpdateWeightsOnNegativeFeedbackCondition(WeightUpdateConditionStep,
+                                               NegativeFeedbackConditionMixin):
+    def should_update_weights(self,
+                              iteration: LearningSearchIteration,
+                              log: LearningSearchLog) -> bool:
+        return self.negative_feedback(iteration, log)
 
 
 ##------------------------------------------------------------------------------
@@ -1213,6 +1235,14 @@ class NeverRestartOnWeightUpdateCondition(RestartConditionStep):
                        iteration: LearningSearchIteration,
                        log: LearningSearchLog) -> bool:
         return False
+
+
+class RestartOnNegativeFeedbackCondition(RestartConditionStep,
+                                         NegativeFeedbackConditionMixin):
+    def should_restart(self,
+                       iteration: LearningSearchIteration,
+                       log: LearningSearchLog) -> bool:
+        return self.negative_feedback(iteration, log)
 
 ##------------------------------------------------------------------------------
 ## Stop condition
