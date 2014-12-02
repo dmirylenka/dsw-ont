@@ -1,10 +1,9 @@
 ### Next
+* make too-long-without-feedback start counting only if the graph has grown bigger than previously
 * introduce monitoring/stopping based on the performance on the nodes visited so far
 * implement the stopping criterion
 * figure out the interplay between C and gamma
-* distinguish automatic feedback points from user-input ones
 * on negative feedback, figure out the first irrelevant parent
-* present the query node with the path to the root
 * filter the categories such as "templated, stubs, etc."
 
 ### Later
@@ -13,6 +12,8 @@
 * implement space- and time-efficient storing of the category states
 
 ### Done
+* present the query node with the path to the root
+* distinguish automatic feedback points from user-input ones
 * restart if too_long_without_feedback only if we had negative feedback
 * implement batch learning from the collected feedback, instead of the perceptron-like updates
 * query the user when too many steps have passed without feedback (just in case)

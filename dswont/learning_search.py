@@ -49,6 +49,18 @@ class UserFeedbackInput(metaclass=abc.ABCMeta):
     """Marker interface for the feedback that can be asked of the user.
     
     """
+
+    def __init__(self):
+        self._automatic = True
+
+    @property
+    def automatic(self) -> bool:
+        return self._automatic
+
+    @automatic.setter
+    def automatic(self, automatic: bool):
+        self._automatic = automatic
+
     @classmethod
     @abc.abstractmethod
     def query(cls, points):
@@ -94,6 +106,10 @@ class LearningSearchLog(object):
         return self._feedback
 
     @property
+    def feedback_points(self):
+        return [fp for fps in self.feedback.values() for fp in fps]
+
+    @property
     def weights(self):
         return self._weights
 
@@ -133,10 +149,6 @@ class LearningSearchLog(object):
     def moves_since_feedback(self):
         last_feedback = self.feedback.last_key if self.feedback else 0
         return self.iteration - last_feedback
-
-    @property
-    def n_feedback(self):
-        return len(self.feedback)
 
     @property
     def n_updates(self):
@@ -451,11 +463,13 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
                          learning_log: LearningSearchLog):
         print(
             "Iteration {}, {} restarts, {} moves since restart, "
-            "{} feedback points, {} updates, current vector: {}."
+            "{} feedback points (+{} automatic), {} updates, current vector: {}."
             .format(learning_log.iteration,
                     learning_log.n_restarts,
                     learning_log.moves_since_restart,
-                    learning_log.n_feedback,
+                    sum(1 for f in learning_log.feedback_points
+                          if not f.automatic),
+                    sum(1 for f in learning_log.feedback_points if f.automatic),
                     learning_log.n_updates,
                     util.format_nums(self._weight_vector, 5)))
         current_cost, current_state = iteration.current_cost_state_pair
@@ -625,6 +639,7 @@ class MultiBinaryFeedback(UserFeedbackInput):
     NO_FEEDBACK = None
 
     def __init__(self, points, labels):
+        super().__init__()
         self._points = points
         self._labels = labels
 
@@ -661,8 +676,28 @@ class MultiBinaryFeedback(UserFeedbackInput):
         return self._labels
 
     def copy(self):
-        return MultiBinaryFeedback(self._points.copy(),
-                                   self._labels.copy())
+        result = MultiBinaryFeedback(self._points.copy(),
+                                     self._labels.copy())
+        result.automatic = self.automatic
+        return result
+
+    def __str__(self):
+        def label_to_str(label):
+            if label == MultiBinaryFeedback.POSITIVE_FEEDBACK:
+                return "+"
+            elif label == MultiBinaryFeedback.NEGATIVE_FEEDBACK:
+                return "-"
+            elif label == MultiBinaryFeedback.NOT_SURE_FEEDBACK:
+                return "?"
+            elif label == MultiBinaryFeedback.NO_FEEDBACK:
+                return "None"
+            else:
+                raise AssertionError("Cannot happen")
+        def item_to_str(item):
+            return "{} : {}".format(str(item[0]), label_to_str(item[1]))
+        return "MultiBinaryFeedback({})"\
+               .format([item_to_str(item)
+                        for item in zip(self._points, self._labels)])
 
 
 class MultiSelectFeedback(UserFeedbackInput):
@@ -676,6 +711,7 @@ class MultiSelectFeedback(UserFeedbackInput):
     """
 
     def __init__(self, preferred_points, other_points):
+        super().__init__()
         self.preferred = list(preferred_points)
         self.other = list(other_points)
 
@@ -693,8 +729,11 @@ class MultiSelectFeedback(UserFeedbackInput):
         return feature_feedback
 
     def copy(self):
-        return MultiSelectFeedback(self.preferred.copy(),
-                                   self.other.copy())
+        result = MultiSelectFeedback(self.preferred.copy(),
+                                     self.other.copy())
+        result.automatic = self.automatic
+        return result
+        
 
 
 ##------------------------------------------------------------------------------
@@ -936,13 +975,16 @@ class BinaryFeedbackStdInTeacher(FeedbackCollectionStep):
     def __init__(self, state_to_str):
         self._state_to_str = state_to_str
 
-    def get_feedback(self, query: MultiBinaryFeedback):
-        assert isinstance(query, MultiBinaryFeedback)
-        feedback = query.copy()
-        for index, state in enumerate(query.points()):
+    def get_feedback(self, feedback: MultiBinaryFeedback):
+        assert isinstance(feedback, MultiBinaryFeedback)
+        ever_asked_user = False
+        for index, state in enumerate(feedback.points()):
             if feedback._labels[index] == MultiBinaryFeedback.NO_FEEDBACK:
                 label = self.get_label_for_state(state)
                 feedback._labels[index] = label
+                ever_asked_user = True
+        if ever_asked_user:
+            feedback.automatic = False
         return feedback
 
     def get_label_for_state(self, state):

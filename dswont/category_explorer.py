@@ -386,6 +386,50 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache,
 ## Definition of the interactive learning procedure.
 ##==============================================================================
 
+
+class HardcodedFeedbackCache(lsearch.FeedbackCache):
+
+    def __init__(self):
+        from dswont.learning_search import MultiBinaryFeedback as MBF
+        self.node_labels = {
+            'Computer science stubs' : MBF.POSITIVE_FEEDBACK,
+            'Computer scientists' : MBF.POSITIVE_FEEDBACK,
+            'Philosophy of computer science' : MBF.NEGATIVE_FEEDBACK,
+            'History of computer science' : MBF.NEGATIVE_FEEDBACK,
+            'Wikipedia books on computer science' : MBF.NEGATIVE_FEEDBACK,
+            'Computer science awards' : MBF.NEGATIVE_FEEDBACK,
+            'Computer science conferences' : MBF.NEGATIVE_FEEDBACK,
+            'Computer science organizations' : MBF.POSITIVE_FEEDBACK,
+            'Unsolved problems in computer science' : MBF.POSITIVE_FEEDBACK,
+            'Computer science portal' : MBF.POSITIVE_FEEDBACK,
+            'Computer science literature' : MBF.NEGATIVE_FEEDBACK,
+            'Areas of computer science' : MBF.POSITIVE_FEEDBACK,
+            'Computer science education' : MBF.NEGATIVE_FEEDBACK
+        }
+
+    def restore_memoized_labels(self, feedback):
+        updated_feedback = feedback.copy()
+        if isinstance(updated_feedback, lsearch.MultiBinaryFeedback):
+            knew_all_labels = True
+            for index, state in enumerate(updated_feedback.points()):
+                node = state.action().node()
+                if node in self.node_labels:
+                    print("Got the label from HARDCODED cache: {} : {}"
+                          .format(node, self.node_labels[node]))
+                    updated_feedback.labels[index] = self.node_labels[node]
+                else:
+                    knew_all_labels = False
+            if knew_all_labels:
+                # Count this feedback as user-given.
+                updated_feedback.automatic = False
+        else:
+            raise TypeError("Unknown feedback type: {}".format(type(feedback)))
+        return updated_feedback
+
+    def memoize_labels(self, feedback):
+        pass
+
+
 def run_selection_procedure(max_nodes):
     with wiki.CategoryRelationCache() as rel:
         # root = 'Software'
@@ -437,6 +481,19 @@ def run_selection_procedure(max_nodes):
         def state_to_node_name(state):
             return "'{}'".format(state.action().node())
 
+        def state_to_node_path(sstate):
+            node_path = [sstate.action().node()]
+            state = sstate.previous().state()
+            parents = [p for p in rel.parents(node_path[-1])
+                       if state.is_explored(p)]
+            current_node = parents[0]
+            while current_node is not None:
+                node_path.append(current_node)
+                parents = [p for p in rel.parents(node_path[-1])
+                           if state.is_explored(p)]
+                current_node = parents[0] if parents else None
+            return '->'.join(reversed(node_path))
+
         # Weights for the ordinary features.
         # weight_vector = [-1, 1, -1, 1, 1]
         weight_vector = [0, 0, 0, 0, 0]
@@ -450,13 +507,13 @@ def run_selection_procedure(max_nodes):
         # learner = lsearch.PassiveAggressivePreferenceLearner(weight_vector,
         #                                                      features, 1)
         learner = lsearch.SvmBasedPreferenceLearner(weight_vector, features)
-
+        hardcoded_feedback = HardcodedFeedbackCache()
 
         main_pipeline = lsearch.LearningSearchPipeline(
             (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(1),
              lsearch.BinaryFeedbackOnNextNode(),
              lsearch.MemoizingFeedbackCollection(
-                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
                  feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
              seen_feedback_filter,
@@ -469,7 +526,9 @@ def run_selection_procedure(max_nodes):
             (lsearch.CurrentNodeHasSmallDepthQueryingCondition(0),
              lsearch.BinaryFeedbackOnAllNextNodes(),
              lsearch.MemoizingFeedbackCollection(
-                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+                 lsearch.MemoizingFeedbackCollection(
+                     lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
+                     hardcoded_feedback),
                  feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
              # lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
@@ -483,7 +542,7 @@ def run_selection_procedure(max_nodes):
             (lsearch.TooLongWithoutFeedbackQueryingCondition(100),
              lsearch.BinaryFeedbackOnNextNode(),
              lsearch.MemoizingFeedbackCollection(
-                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_name),
+                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
                  feedback_cache),
              lsearch.PreferenceWrtCurrentFeedbackGeneration(),
              seen_feedback_filter,
@@ -518,7 +577,7 @@ def run_selection_procedure(max_nodes):
                 weighted_f1s.append(weighted_f1)
                 node = state.action().node() if state.action() else "None"
                 depth = state.state().depth(node)
-                print("Iteration {:>5}, accuracy {:4.3f},"
+                print("Evaluation at iteration {:>5}: accuracy {:4.3f},"
                       "weighted f1 {:4.3f}, topic: '{}', depth: {}, frontier {}"
                       .format(niter, accuracy, weighted_f1, node, depth, len(list(state.state().candidate_nodes()))))
             niter += 1
