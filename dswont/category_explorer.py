@@ -110,6 +110,41 @@ class CategoryGraphState(sspace.State):
     def __repr__(self):
         return "CategoryGraphState({})".format(repr(self._node_info))
 
+
+def parent_on_the_shortest_known_way_to_root(node: str,
+                                             state: CategoryGraphState,
+                                             rel: wiki.CategoryRelationCache):
+    parents = [p for p in rel.parents(node)
+               if state.is_explored(p)]
+    return min(parents, key=lambda p: state.depth(p)) if parents else None
+
+
+def trace_back_to_node(node: str,
+                       sstate: sspace.SearchState,
+                       rel: wiki.CategoryRelationCache):
+    while sstate and sstate.action():
+        if sstate.action().node() == node:
+            return sstate
+        else:
+            sstate = sstate.previous()
+    return None
+
+
+def node_parent_state(sstate: 'sspace.SearchState[CategoryGraphState]',
+                      rel: wiki.CategoryRelationCache):
+    """Returns the state that introduced the parent of the current state's node.
+
+    """
+    node = sstate.action().node()
+    state = sstate.state()
+    parent = parent_on_the_shortest_known_way_to_root(node, state, rel)
+    result = trace_back_to_node(parent, sstate, rel)
+    return result
+    
+
+# TODO: finish implementing this (discovering the first irrelevant node on the path from root)
+
+
 class AddNodeAction(sspace.Action):
     """Action that describes moving between CategoryGraphState-s.
 
@@ -358,8 +393,6 @@ def parent_child_similarity_incremental_fn(rel: wiki.CategoryRelationCache,
                                             prev_value):
         state = prev_sstate.state()
         nnodes = state.size()
-        if nnodes == 0:
-            return 0
         node = action.node()
         all_parents = (parent_node for parent_node in rel.parents(node))
         explored_parents = (parent_node for parent_node in all_parents
@@ -394,17 +427,17 @@ class HardcodedFeedbackCache(lsearch.FeedbackCache):
         self.node_labels = {
             'Computer science stubs' : MBF.POSITIVE_FEEDBACK,
             'Computer scientists' : MBF.POSITIVE_FEEDBACK,
-            'Philosophy of computer science' : MBF.NEGATIVE_FEEDBACK,
-            'History of computer science' : MBF.NEGATIVE_FEEDBACK,
-            'Wikipedia books on computer science' : MBF.NEGATIVE_FEEDBACK,
-            'Computer science awards' : MBF.NEGATIVE_FEEDBACK,
-            'Computer science conferences' : MBF.NEGATIVE_FEEDBACK,
+            'Philosophy of computer science' : MBF.POSITIVE_FEEDBACK,
+            'History of computer science' : MBF.POSITIVE_FEEDBACK,
+            'Wikipedia books on computer science' : MBF.POSITIVE_FEEDBACK,
+            'Computer science awards' : MBF.POSITIVE_FEEDBACK,
+            'Computer science conferences' : MBF.POSITIVE_FEEDBACK,
             'Computer science organizations' : MBF.POSITIVE_FEEDBACK,
             'Unsolved problems in computer science' : MBF.POSITIVE_FEEDBACK,
             'Computer science portal' : MBF.POSITIVE_FEEDBACK,
-            'Computer science literature' : MBF.NEGATIVE_FEEDBACK,
+            'Computer science literature' : MBF.POSITIVE_FEEDBACK,
             'Areas of computer science' : MBF.POSITIVE_FEEDBACK,
-            'Computer science education' : MBF.NEGATIVE_FEEDBACK
+            'Computer science education' : MBF.POSITIVE_FEEDBACK
         }
 
     def restore_memoized_labels(self, feedback):
@@ -430,6 +463,41 @@ class HardcodedFeedbackCache(lsearch.FeedbackCache):
         pass
 
 
+class BinaryFeedbackParentCheckingTeacher(
+        lsearch.FeedbackCollectionStepWrapper):
+
+    def __init__(self,
+                 delegate: lsearch.FeedbackCollectionStep,
+                 rel: wiki.CategoryRelationCache):
+        super().__init__(delegate)
+        self._relations = rel
+
+    def before(self,
+               iteration: lsearch.LearningSearchIteration,
+               log: lsearch.LearningSearchLog):
+        return iteration
+
+    def after(self,
+              iteration: lsearch.LearningSearchIteration,
+              log: lsearch.LearningSearchLog):
+        if iteration.feedback_given:
+            cost, parent_state = iteration.next_cost_state_pairs[0]
+            parent_feedback = iteration.feedback_given
+            feedback = parent_feedback
+            all_feedback = [parent_feedback]
+            while parent_state in parent_feedback.negative_points:
+                state = parent_state
+                feedback = parent_feedback
+                parent_state = node_parent_state(state, self._relations)
+                parent_feedback = self.delegate.get_feedback(
+                    lsearch.MultiBinaryFeedback.query([parent_state]))
+                all_feedback.append(parent_feedback)
+            return iteration.update(
+                feedback_given=lsearch.combine_multi_binary_feedbacks(
+                    all_feedback))
+        return iteration
+                                    
+
 def run_selection_procedure(max_nodes):
     with wiki.CategoryRelationCache() as rel:
         # root = 'Software'
@@ -453,7 +521,7 @@ def run_selection_procedure(max_nodes):
         parent_similarity_ftr = ftr.CachingAdditiveSearchStateFeature(
             "parent_similarity",
             parent_child_similarity_incremental_fn(rel, False),
-            zero_value=0)
+            zero_value=1)
         graph_size_ftr = ftr.Feature('graph_size', graph_size_fn(False))
 
 
@@ -468,7 +536,7 @@ def run_selection_procedure(max_nodes):
                                 irrelevant_links_ftr,
                                 leaves_ftr,
                                 parent_similarity_ftr,
-                                # graph_size_ftr
+                                graph_size_ftr
                                )
                                # # Exclude the product features for the moment.
                                #.add_products()
@@ -486,17 +554,18 @@ def run_selection_procedure(max_nodes):
             state = sstate.previous().state()
             parents = [p for p in rel.parents(node_path[-1])
                        if state.is_explored(p)]
-            current_node = parents[0]
+            current_node = min(parents, key=lambda p: state.depth(p))
             while current_node is not None:
                 node_path.append(current_node)
                 parents = [p for p in rel.parents(node_path[-1])
                            if state.is_explored(p)]
-                current_node = parents[0] if parents else None
+                current_node = min(parents, key=lambda p: state.depth(p))\
+                               if parents else None
             return ' -> '.join(reversed(node_path))
 
         # Weights for the ordinary features.
         # weight_vector = [-1, 1, -1, 1, 1]
-        weight_vector = [0, 0, 0, 0, 0]
+        weight_vector = [0, 0, 0, 0, 0, 0]
         # Weights for the product features.
         # weight_vector += [0] * (features.n_features() - len(weight_vector))
         # # weight for the bias feature
@@ -509,13 +578,28 @@ def run_selection_procedure(max_nodes):
         learner = lsearch.SvmBasedPreferenceLearner(weight_vector, features)
         hardcoded_feedback = HardcodedFeedbackCache()
 
+        in_memory_caching_feedback_teacher = lsearch.MemoizingFeedbackCollection(
+            lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
+            feedback_cache
+        )
+
+        hardcoded_feedback_teacher = lsearch.MemoizingFeedbackCollection(
+            lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
+            hardcoded_feedback
+        )
+
+        main_pipeline_feedback_teacher = BinaryFeedbackParentCheckingTeacher(
+            in_memory_caching_feedback_teacher, rel)
+
+        top_level_teacher = lsearch.MemoizingFeedbackCollection(
+            hardcoded_feedback_teacher,
+            feedback_cache)
+
         main_pipeline = lsearch.LearningSearchPipeline(
-            (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(1),
+            (lsearch.NextNotMuchBetterThanCurrentQueryingCondition(0),
              lsearch.BinaryFeedbackOnNextNode(),
-             lsearch.MemoizingFeedbackCollection(
-                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
-                 feedback_cache),
-             lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             main_pipeline_feedback_teacher,
+             lsearch.PreferenceWrtPreviousFeedbackGeneration(),
              seen_feedback_filter,
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
              learner,
@@ -525,12 +609,8 @@ def run_selection_procedure(max_nodes):
         top_level_pipeline = lsearch.LearningSearchPipeline(
             (lsearch.CurrentNodeHasSmallDepthQueryingCondition(0),
              lsearch.BinaryFeedbackOnAllNextNodes(),
-             lsearch.MemoizingFeedbackCollection(
-                 lsearch.MemoizingFeedbackCollection(
-                     lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
-                     hardcoded_feedback),
-                 feedback_cache),
-             lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             top_level_teacher,
+             lsearch.PreferenceWrtPreviousFeedbackGeneration(),
              # lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
              seen_feedback_filter,
              lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
@@ -539,15 +619,13 @@ def run_selection_procedure(max_nodes):
              lsearch.NeverStopCondition()))
         
         periodic_feedback_pipeline = lsearch.LearningSearchPipeline(
-            (lsearch.TooLongWithoutFeedbackQueryingCondition(100),
+            (lsearch.TooLongWithoutFeedbackQueryingCondition(200),
              lsearch.BinaryFeedbackOnNextNode(),
-             lsearch.MemoizingFeedbackCollection(
-                 lsearch.BinaryFeedbackStdInTeacher(state_to_node_path),
-                 feedback_cache),
-             lsearch.PreferenceWrtCurrentFeedbackGeneration(),
+             main_pipeline_feedback_teacher,
+             lsearch.PreferenceWrtPreviousFeedbackGeneration(),
              seen_feedback_filter,
              lsearch.PairwisePreferenceFromBinaryFeedbackGeneration(),
-             lsearch.AlwaysUpdateWeightsOnFeedbackCondition(),
+             lsearch.UpdateWeightsOnNegativeFeedbackCondition(),
              # lsearch.NextNotMuchBetterThanCurrentUpdateCondition(1),
              learner,
              # lsearch.AlwaysRestartOnWeightUpdateCondition(),

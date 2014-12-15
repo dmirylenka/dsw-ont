@@ -125,7 +125,7 @@ words_re = re.compile('\w+')
 
 
 def cheap_tokenize(string: str):
-    return string.split()
+    return string.lower().split()
 
 
 def word_list(string: str):

@@ -185,6 +185,13 @@ class WikipediaGraphIndex(object):
         return False
 
 
+DEFAULT_EXCLUSION_PATTERNS = [
+        lambda title: title.endswith(" portal"),
+        lambda title: title.endswith(" stubs"),
+        lambda title: title.startswith("Wikipedia ")
+]
+
+
 class CategoryRelationCache(object):
     """ The in-memory cache for the parent-child category relations.
 
@@ -195,24 +202,29 @@ class CategoryRelationCache(object):
 
     def __init__(self,
                  subcat_index_file=WIKI_SUBCAT_INDEX_FILE,
-                 supercat_index_file=WIKI_SUPERCAT_INDEX_FILE):
+                 supercat_index_file=WIKI_SUPERCAT_INDEX_FILE,
+                 exclusion_fns=DEFAULT_EXCLUSION_PATTERNS):
         self._wiki_graph = WikipediaGraphIndex(
             subcat_index_file=subcat_index_file,
             supercat_index_file=supercat_index_file)
         self._children = collections.OrderedDict()
         self._parents = collections.OrderedDict()
+        exclusion_fns = exclusion_fns or []
+        def filter_fn(title):
+            return not any(exclude(title) for exclude in exclusion_fns)
+        self.filter_fn = filter_fn
 
     def _compute_parents(self, node):
         supercat_uris = self._wiki_graph. \
             get_supercats(dbpedia.to_category_uri(node))
-        return sorted([dbpedia.to_title(uri)
-                       for uri in supercat_uris])
+        supercat_titles = (dbpedia.to_title(uri) for uri in supercat_uris)
+        return sorted(filter(self.filter_fn, supercat_titles))
 
     def _compute_children(self, node):
         subcat_uris = self._wiki_graph. \
             get_subcats(dbpedia.to_category_uri(node))
-        return sorted([dbpedia.to_title(uri)
-                       for uri in subcat_uris])
+        subcat_titles = (dbpedia.to_title(uri) for uri in subcat_uris)
+        return sorted(filter(self.filter_fn, subcat_titles))
 
     def parents(self, node):
         if node in self._parents:

@@ -142,29 +142,17 @@ class LearningSearchLog(object):
 
     @property
     def moves_since_restart(self):
-        last_restart = self.restarts[-1] if self.restarts else 0
-        return self.iteration - last_restart - 1
+        return self.iteration - self.restarts[-1]\
+            if self.restarts else self.iteration + 1
 
     @property
     def moves_since_feedback(self):
-        last_feedback = self.feedback.last_key if self.feedback else 0
-        return self.iteration - last_feedback
+        return self.iteration - self.feedback.last_key\
+            if self.feedback else self.iteration + 1
 
     @property
     def n_updates(self):
         return len(self.weights)
-
-    @property
-    def max_iterations_without_restart(self):
-        restarts = self.restarts
-        moves_since_restart = self.moves_since_restart
-        if len(restarts) > 1:
-            return max(max(map(operator.sub, restarts[1:], restarts[:-1])) - 1,
-                       moves_since_restart)
-        elif len(restarts) == 1:
-            return max(restarts[-1] - 1, moves_since_restart)
-        else:  # No restarts.
-            return self.iteration - 1
 
 
 class LearningSearchLogSnapshot(LearningSearchLog):
@@ -474,11 +462,12 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
                          iteration: LearningSearchIteration,
                          learning_log: LearningSearchLog):
         print(
-            "Iteration {}, {} restarts, {} moves since restart, "
+            "Finished iteration {}, {} restarts, {} moves since restart, {} since feedback, "
             "{} feedback points (+{} automatic), {} updates, current vector: {}."
             .format(learning_log.iteration,
                     learning_log.n_restarts,
                     learning_log.moves_since_restart,
+                    learning_log.moves_since_feedback,
                     sum(1 for f in learning_log.feedback_points
                           if not f.automatic),
                     sum(1 for f in learning_log.feedback_points if f.automatic),
@@ -547,10 +536,13 @@ class LearningSearch(search.FeatureBasedHeuristicSearch):
 ## Definition of some useful intermediate-level abstractions.
 ##==============================================================================
 
-class FeedbackCollectionStepWrapper(FeedbackIterationStep):
+class FeedbackCollectionStepWrapper(FeedbackCollectionStep):
 
     def __init__(self, delegate: FeedbackIterationStep):
         self.delegate = delegate
+
+    def get_feedback(self, query: UserFeedbackInput):
+        return self.delegate.get_feedback(query)
 
     def process(self,
                 iteration: LearningSearchIteration,
@@ -712,6 +704,15 @@ class MultiBinaryFeedback(UserFeedbackInput):
                         for item in zip(self._points, self._labels)])
 
 
+def combine_multi_binary_feedbacks(feedbacks) -> MultiBinaryFeedback:
+    if len(feedbacks) == 1:
+        return feedbacks[0]
+    else:
+        points = [point for feedback in feedbacks for point in feedback.points()]
+        labels = [label for feedback in feedbacks for label in feedback.labels]
+        return MultiBinaryFeedback(points, labels)
+
+
 class MultiSelectFeedback(UserFeedbackInput):
     """Feedback specifying selection of one set of points from a larger set.
 
@@ -847,19 +848,21 @@ class CurrentNodeHasSmallDepthQueryingCondition(QueryingConditionStep):
 
 class TooLongWithoutFeedbackQueryingCondition(QueryingConditionStep):
 
-    def __init__(self, steps_without_feedback):
-        self.steps_without_feedback = steps_without_feedback
+    def __init__(self, increment):
+        self.increment = increment
+        self.max_moves = increment
 
     def querying_condition(self,
                   iteration: LearningSearchIteration,
                   log: LearningSearchLog):
         _, current_state = iteration.current_cost_state_pair
-        recent_feedback = log.moves_since_feedback < self.steps_without_feedback
-        graph_too_large = log.moves_since_restart == log.max_iterations_without_restart
-        if not recent_feedback and graph_too_large:
+        extra_moves = log.moves_since_feedback + 1
+        print("Feedback at: {}".format(list(log._log._feedback.keys())))
+        if extra_moves >= self.max_moves:
+            # self.max_moves += self.increment
             _, next_state = iteration.next_cost_state_pairs[0]
             return TooLongWithoutFeedback(current_state, next_state,
-                                          log.moves_since_feedback)
+                                          extra_moves)
         else:
             return None
             
@@ -1002,6 +1005,7 @@ class BinaryFeedbackStdInTeacher(FeedbackCollectionStep):
 
     def get_label_for_state(self, state):
         while True:
+            print()
             print("Please, provide feedback for the following state:\n{}"
                   .format(self._state_to_str(state)))
             print(
@@ -1097,17 +1101,18 @@ class PreferenceFeedbackStdInTeacher(FeedbackCollectionStep):
 ##------------------------------------------------------------------------------
 ## Feedback generation from the user input
 
-class PreferenceWrtCurrentFeedbackGeneration(FeedbackGenerationStep):
+class PreferenceWrtPreviousFeedbackGeneration(FeedbackGenerationStep):
     def generate_feedback(self, iteration: LearningSearchIteration,
                           log: LearningSearchLog) -> 'list[Feedback]':
-        current_state = iteration.querying_condition.current
         feedback = iteration.feedback_given
         assert isinstance(feedback, MultiBinaryFeedback)
         result = []
         for next_state in feedback.positive_points:
-            result.append(PreferenceFeedback(next_state, current_state))
+            previous_state = next_state.previous()
+            result.append(PreferenceFeedback(next_state, previous_state))
         for next_state in feedback.negative_points:
-            result.append(PreferenceFeedback(current_state, next_state))
+            previous_state = next_state.previous()
+            result.append(PreferenceFeedback(previous_state, next_state))
         return result if result else None
 
 
@@ -1245,7 +1250,7 @@ class SvmBasedPreferenceLearner(WeightUpdateStep):
     def __init__(self, initial_weights, features):
         self._weights = initial_weights
         self.features = features
-        self.classifier = sklearn.svm.SVC(C=10.0, kernel='linear')
+        self.classifier = sklearn.svm.SVC(C=100.0, kernel='linear')
         self.data = []
 
     def get_weights(self):
